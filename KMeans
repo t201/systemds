@@ -1,0 +1,51 @@
+# Introduction
+
+
+The DML (Declarative Machine Learning) language has built-in functions which enable access to both low- and high-level function
+
+
+
+# KMeans function
+The kmeans() function in R requires, at a minimum, numeric data and a number of centers (or clusters). 
+The cluster centers are pulled out by using $centers.
+
+
+
+# Usage
+
+R
+
+kmeans(x, centers, iter.max = 10, nstart = 1)
+
+# Arguments
+
+| Name  | Type           | Default  | Description |
+| :----  | :-------------  | -------- | :------------------------------- |
+| x      | Matrix[Numeric] | required |The input Matrix to do KMeans on..|
+|centers | Int             | -------- |The no. of cenetrs                |
+|iter.max|Int              | 10       |Max no. of iterations allowed     |
+|nstart  |Int              |10        |No. of random starting positions  |
+
+
+# RETURN VALUES
+# ----------------------------------------------------------------------------
+# NAME     TYPE      DEFAULT  MEANING
+# ----------------------------------------------------------------------------
+# Y        String    "Y.mtx"  The mapping of records to centroids
+# C        String    "C.mtx"  The output matrix with the centroids
+# ----------------------------------------------------------------------------
+
+
+# Example
+
+m_kmeans = function(Matrix x, centers k=0,int iter.max=25,int nstart=10)
+return(Matrix[numerical] C,Matrix[numerical] Y)
+
+
+
+
+
+
+
+
+
