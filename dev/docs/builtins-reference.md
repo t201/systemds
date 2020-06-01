@@ -21,6 +21,7 @@ limitations under the License.
 
   * [Introduction](#introduction)
   * [Built-In Construction Functions](#built-in-construction-functions)
+   * [`KMeans`-Function](#KMeans-function)
     * [`tensor`-Function](#tensor-function)
   * [DML-Bodied Built-In functions](#dml-bodied-built-in-functions)
     * [`lm`-Function](#lm-function)
@@ -38,6 +39,50 @@ The DML (Declarative Machine Learning) language has built-in functions which ena
 to support all kinds of use cases.
 
 Builtins are either implemented on a compiler level or as DML scripts that are loaded at compile time.
+# Introduction
+
+
+The DML (Declarative Machine Learning) language has built-in functions which enable access to both low- and high-level function
+
+
+
+## `KMeans`-Function
+
+The kmeans() function in R requires, at a minimum, numeric data and a number of centers (or clusters). 
+The cluster centers are pulled out by using $centers.
+
+
+
+### Usage
+```r
+kmeans(x, centers, iter.max, nstart)
+```
+
+### Arguments
+
+| Name   | Type            | Default  | Description |
+| :----  | :-------------  | -------- | :------------------------------- |
+| x      | Matrix[Numeric] | required |The input Matrix to do KMeans on..|
+|centers | Int             | -------- |The no. of cenetrs                |
+|iter.max|Int              |10        |Max no. of iterations allowed     |
+|nstart  |Int              |10        |No. of random starting positions  |
+
+
+
+### Returns
+| Type           | Description |
+| :------------- | :---------- |
+| String         | The mapping of records to centroids |
+| String         |The output matrix with the centroids |
+
+
+### Example
+
+KMeans = rand(Matrix x, centers k=0,int iter.max=25,int nstart=10)
+return(Matrix[numerical] C,Matrix[numerical] Y)
+
+
+
 
 # Built-In Construction Functions
 
