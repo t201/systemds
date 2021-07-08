@@ -29,8 +29,6 @@ on:
     paths-ignore:
       - 'docs/**'
       - '*.md'
-    branches:
-      - master
     
 jobs:
   build:
