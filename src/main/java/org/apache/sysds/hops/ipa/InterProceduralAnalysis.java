@@ -54,9 +54,12 @@ import org.apache.sysds.runtime.instructions.cp.ScalarObjectFactory;
 import org.apache.sysds.runtime.meta.DataCharacteristics;
 import org.apache.sysds.runtime.meta.MatrixCharacteristics;
 import org.apache.sysds.runtime.meta.MetaDataFormat;
+import org.apache.sysds.utils.Explain;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -96,22 +99,23 @@ public class InterProceduralAnalysis
 	protected static final boolean FORWARD_SIMPLE_FUN_CALLS       = true; //replace a call to a simple forwarding function with the function itself
 	protected static final boolean FLAG_NONDETERMINISM            = true; //flag functions which directly or transitively contain non-deterministic calls
 	
-	static {
-		// for internal debugging only
-		if( LDEBUG ) {
-			Logger.getLogger("org.apache.sysds.hops.ipa")
-				.setLevel(Level.DEBUG);
-		}
-	}
-	
 	private final DMLProgram _prog;
 	private final StatementBlock _sb;
 	
 	//function call graph for functions reachable from main
-	private final FunctionCallGraph _fgraph;
+	private FunctionCallGraph _fgraph;
 	
 	//set IPA passes to apply in order 
 	private final ArrayList<IPAPass> _passes;
+
+	static {
+		// for internal debugging only
+		if( LDEBUG ) {
+			Logger.getLogger("org.apache.sysds.hops.ipa")
+				.setLevel(Level.TRACE);
+		}
+	}
+
 	
 	/**
 	 * Creates a handle for performing inter-procedural analysis
@@ -123,12 +127,16 @@ public class InterProceduralAnalysis
 	 * @param dmlp The DML program to analyze
 	 */
 	public InterProceduralAnalysis(DMLProgram dmlp) {
-		//analyzes the function call graph 
+		//analyzes the function call graph
 		_prog = dmlp;
 		_sb = null;
 		_fgraph = new FunctionCallGraph(dmlp);
+		if( LOG.isDebugEnabled() ) {
+			LOG.debug("IPA: Initial FunctionCallGraph: \n--MAIN PROGRAM\n" + 
+				Explain.explainFunctionCallGraph(_fgraph, new HashSet<String>(), null, 1));
+		}
 		
-		//create order list of IPA passes
+		//create ordered list of IPA passes
 		_passes = new ArrayList<>();
 		_passes.add(new IPAPassRemoveUnusedFunctions());
 		_passes.add(new IPAPassFlagFunctionsRecompileOnce());
@@ -168,7 +176,6 @@ public class InterProceduralAnalysis
 	 * 
 	 * @param repetitions number of IPA rounds 
 	 */
-	@SuppressWarnings("null")
 	public void analyzeProgram(int repetitions) {
 		//sanity check for valid number of repetitions
 		if( repetitions <= 0 )
@@ -184,6 +191,10 @@ public class InterProceduralAnalysis
 			FunctionCallSizeInfo fcallSizes = new FunctionCallSizeInfo(_fgraph);
 			if( LOG.isDebugEnabled() )
 				LOG.debug("IPA: Initial FunctionCallSummary: \n" + fcallSizes);
+			
+			//step 0: retain original unoptimized functions for eval()
+			if( _fgraph.containsSecondOrderCall() && i==0 ) //on first call
+				_prog.copyOriginalFunctions();
 			
 			//step 1: intra- and inter-procedural 
 			if( INTRA_PROCEDURAL_ANALYSIS ) {
@@ -207,9 +218,10 @@ public class InterProceduralAnalysis
 			}
 			
 			//step 2: apply additional IPA passes
+			boolean rebuildFGraph = false;
 			for( IPAPass pass : _passes )
 				if( pass.isApplicable(_fgraph) )
-					pass.rewriteProgram(_prog, _fgraph, fcallSizes);
+					rebuildFGraph |= pass.rewriteProgram(_prog, _fgraph, fcallSizes);
 			
 			//early abort without functions or on reached fixpoint
 			if( _fgraph.getReachableFunctions().isEmpty() 
@@ -219,13 +231,20 @@ public class InterProceduralAnalysis
 						+ " repetitions due to reached fixpoint.");
 				break;
 			}
+			
+			//step 3: rebuild function call graph if necessary
+			if( rebuildFGraph && i < repetitions-1 )
+				_fgraph = new FunctionCallGraph(_prog);
 		}
 		
-		//cleanup pass: remove unused functions
+		//cleanup passes: remove unused functions, CLA workload extraction
 		FunctionCallGraph graph2 = new FunctionCallGraph(_prog);
-		IPAPass rmFuns = new IPAPassRemoveUnusedFunctions();
-		if( rmFuns.isApplicable(graph2) )
-			rmFuns.rewriteProgram(_prog, graph2, null);
+		List<IPAPass> fpasses = Arrays.asList(
+			new IPAPassRemoveUnusedFunctions(),
+			new IPAPassCompressionWorkloadAnalysis());
+		for(IPAPass pass : fpasses)
+			if( pass.isApplicable(graph2) )
+				pass.rewriteProgram(_prog, graph2, null);
 	}
 	
 	public Set<String> analyzeSubProgram() {
@@ -523,10 +542,13 @@ public class InterProceduralAnalysis
 		ArrayList<Hop> inputOps = fop.getInput();
 		String fkey = fop.getFunctionKey();
 		
-		for( int i=0; i<funArgNames.length; i++ )
-		{
+		//iterate over all parameters (with robustness for missing parameters)
+		for( int i=0; i<Math.min(inputOps.size(), funArgNames.length); i++ ) {
 			//create mapping between input hops and vars
 			DataIdentifier dat = fstmt.getInputParam(funArgNames[i]);
+			if( dat == null )
+				throw new HopsException("Failed IPA: function argument '"+funArgNames[i]+"' "
+					+ "does not exist in function signature of "+fop.getFunctionKey()+".");
 			Hop input = inputOps.get(i);
 			
 			if( input.getDataType()==DataType.MATRIX )

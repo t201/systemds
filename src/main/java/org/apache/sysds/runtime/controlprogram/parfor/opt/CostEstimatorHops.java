@@ -24,13 +24,15 @@ import org.apache.sysds.common.Types.ExecMode;
 import org.apache.sysds.hops.Hop;
 import org.apache.sysds.hops.LeftIndexingOp;
 import org.apache.sysds.hops.OptimizerUtils;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.hops.rewrite.HopRewriteUtils;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.runtime.controlprogram.parfor.opt.OptNode.NodeType;
 import org.apache.sysds.runtime.controlprogram.parfor.opt.Optimizer.CostModelType;
 
 public class CostEstimatorHops extends CostEstimator
 {
+	
 	public static final double DEFAULT_MEM_SP = 20*1024*1024;
 	
 	private OptTreePlanMappingAbstract _map = null;
@@ -58,6 +60,7 @@ public class CostEstimatorHops extends CostEstimator
 		
 		//handle specific cases 
 		double DEFAULT_MEM_REMOTE = OptimizerUtils.isSparkExecutionMode() ? DEFAULT_MEM_SP : 0;
+		boolean forcedExec =  DMLScript.getGlobalExecMode() == ExecMode.SINGLE_NODE || h.getForcedExecType()!=null;
 		
 		if( value >= DEFAULT_MEM_REMOTE )
 		{
@@ -67,7 +70,7 @@ public class CostEstimatorHops extends CostEstimator
 			}
 			//check for invalid cp memory estimate
 			else if ( h.getExecType()==ExecType.CP && value >= OptimizerUtils.getLocalMemBudget() ) {
-				if( DMLScript.getGlobalExecMode() != ExecMode.SINGLE_NODE && h.getForcedExecType()==null )
+				if( !forcedExec && !HopRewriteUtils.hasListInputs(h) )
 					LOG.warn("Memory estimate larger than budget but CP exec type (op="+h.getOpString()+", name="+h.getName()+", memest="+h.getMemEstimate()+").");
 				value = DEFAULT_MEM_REMOTE;
 			}
@@ -84,7 +87,7 @@ public class CostEstimatorHops extends CostEstimator
 			value = DEFAULT_MEM_REMOTE;
 		}
 		
-		if( value <= 0 ) { //no mem estimate
+		if( value <= 0 && !forcedExec ) { //no mem estimate
 			LOG.warn("Cannot get memory estimate for hop (op="+h.getOpString()+", name="+h.getName()+", memest="+h.getMemEstimate()+").");
 			value = CostEstimator.DEFAULT_MEM_ESTIMATE_CP;
 		}

@@ -25,8 +25,10 @@ import java.util.Arrays;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.sysds.hops.Hop;
 import org.apache.sysds.common.Types.AggOp;
+import org.apache.sysds.hops.codegen.SpoofCompiler;
 import org.apache.sysds.hops.codegen.SpoofFusedOp.SpoofOutputDimsType;
 import org.apache.sysds.runtime.util.UtilFunctions;
+import org.apache.sysds.hops.codegen.SpoofCompiler.GeneratorAPI;
 
 public class CNodeMultiAgg extends CNodeTpl
 {
@@ -53,7 +55,7 @@ public class CNodeMultiAgg extends CNodeTpl
 	private static final String TEMPLATE_OUT_MIN   = "    c[%IX%] = Math.min(c[%IX%], %IN%);\n";
 	private static final String TEMPLATE_OUT_MAX   = "    c[%IX%] = Math.max(c[%IX%], %IN%);\n";
 	
-	private ArrayList<CNode> _outputs = null; 
+	private ArrayList<CNode> _outputs = null;
 	private ArrayList<AggOp> _aggOps = null;
 	private ArrayList<Hop> _roots = null;
 	private boolean _sparseSafe = false;
@@ -105,14 +107,14 @@ public class CNodeMultiAgg extends CNodeTpl
 	}
 	
 	@Override
-	public String codegen(boolean sparse) {
+	public String codegen(boolean sparse, GeneratorAPI api) {
 		// note: ignore sparse flag, generate both
 		String tmp = TEMPLATE;
 		
 		//generate dense/sparse bodies
 		StringBuilder sb = new StringBuilder();
 		for( CNode out : _outputs )
-			sb.append(out.codegen(false));
+			sb.append(out.codegen(false, api));
 		for( CNode out : _outputs )
 			out.resetGenerated();
 
@@ -205,4 +207,23 @@ public class CNodeMultiAgg extends CNodeTpl
 				return null;
 		}
 	}
+	@Override
+	public boolean isSupported(GeneratorAPI api) {
+		boolean is_supported = (api == GeneratorAPI.JAVA);
+		int i = 0;
+		while(is_supported && i < _inputs.size()) {
+			CNode in = _inputs.get(i++);
+			is_supported = in.isSupported(api);
+		}
+		return  is_supported;
+	}
+	
+	public int compile(GeneratorAPI api, String src) {
+		if(api == GeneratorAPI.CUDA)
+			return compile_nvrtc(SpoofCompiler.native_contexts.get(api), _genVar, src, _sparseSafe); // ToDo: compile MA
+		return -1;
+	}
+	
+	private native int compile_nvrtc(long context, String name, String src, boolean sparseSafe);
+	
 }

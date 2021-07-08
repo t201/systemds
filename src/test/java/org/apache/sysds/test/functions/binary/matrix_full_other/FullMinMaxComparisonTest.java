@@ -27,7 +27,7 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 import org.apache.sysds.common.Types.ExecMode;
 import org.apache.sysds.common.Types.FileFormat;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
@@ -258,12 +258,13 @@ public class FullMinMaxComparisonTest extends AutomatedTestBase
 			HDFSTool.writeMetaDataFile(input("B.mtd"), ValueType.FP64, mc2, FileFormat.TEXT);
 			
 			//run test
+			
 			runTest(true, false, null, -1); 
 			runRScript(true); 
 			
 			//compare matrices 
-			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("C");
-			HashMap<CellIndex, Double> rfile  = readRMatrixFromFS("C");
+			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("C");
+			HashMap<CellIndex, Double> rfile  = readRMatrixFromExpectedDir("C");
 			TestUtils.compareMatrices(dmlfile, rfile, eps, "Stat-DML", "Stat-R");
 		} 
 		catch (IOException e) 

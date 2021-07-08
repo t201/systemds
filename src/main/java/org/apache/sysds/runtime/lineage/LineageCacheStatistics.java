@@ -36,11 +36,15 @@ public class LineageCacheStatistics {
 	private static final LongAdder _numWritesFS     = new LongAdder();
 	private static final LongAdder _numMemDel       = new LongAdder();
 	private static final LongAdder _numRewrites     = new LongAdder();
-	private static final LongAdder _ctimeFSRead     = new LongAdder(); //in nano sec
-	private static final LongAdder _ctimeFSWrite    = new LongAdder(); //in nano sec
-	private static final LongAdder _ctimeCosting    = new LongAdder(); //in nano sec
-	private static final LongAdder _ctimeRewrite    = new LongAdder(); //in nano sec
-	private static final LongAdder _ctimeRewriteEx  = new LongAdder(); //in nano sec
+	// All the time measurements are in nanoseconds
+	private static final LongAdder _ctimeFSRead     = new LongAdder();
+	private static final LongAdder _ctimeFSWrite    = new LongAdder();
+	private static final LongAdder _ctimeSaved      = new LongAdder();
+	private static final LongAdder _ctimeMissed     = new LongAdder();
+	// Bellow entries are for specific to gpu lineage cache
+	private static final LongAdder _numHitsGpu      = new LongAdder();
+	private static final LongAdder _numAsyncEvictGpu= new LongAdder();
+	private static final LongAdder _numSyncEvictGpu = new LongAdder();
 
 	public static void reset() {
 		_numHitsMem.reset();
@@ -55,9 +59,11 @@ public class LineageCacheStatistics {
 		_numRewrites.reset();
 		_ctimeFSRead.reset();
 		_ctimeFSWrite.reset();
-		_ctimeCosting.reset();
-		_ctimeRewrite.reset();
-		_ctimeRewriteEx.reset();
+		_ctimeSaved.reset();
+		_ctimeMissed.reset();
+		_numHitsGpu.reset();
+		_numAsyncEvictGpu.reset();
+		_numSyncEvictGpu.reset();
 	}
 	
 	public static void incrementMemHits() {
@@ -78,6 +84,10 @@ public class LineageCacheStatistics {
 	public static void incrementInstHits() {
 		// Number of times single instruction results are reused (full and partial).
 		_numHitsInst.increment();
+	}
+	
+	public static long getInstHits() {
+		return _numHitsInst.longValue();
 	}
 
 	public static void incrementSBHits() {
@@ -109,7 +119,10 @@ public class LineageCacheStatistics {
 		// Number of deletions from cache (including spilling).
 		_numMemDel.increment();
 	}
-
+	
+	public static long getMemDeletes() {
+		return _numMemDel.longValue();
+	}
 
 	public static void incrementFSReadTime(long delta) {
 		// Total time spent on reading from FS.
@@ -121,16 +134,18 @@ public class LineageCacheStatistics {
 		_ctimeFSWrite.add(delta);
 	}
 
-	public static void incrementCostingTime(long delta) {
-		// Total time spent estimating computation and disk spill costs.
-		_ctimeCosting.add(delta);
+	public static void incrementSavedComputeTime(long delta) {
+		// Total time saved by reusing.
+		// TODO: Handle overflow
+		_ctimeSaved.add(delta);
 	}
 
-	public static void incrementPRewriteTime(long delta) {
-		// Total time spent compiling lineage rewrites.
-		_ctimeRewrite.add(delta);
+	public static void incrementMissedComputeTime(long delta) {
+		// Total time missed due to eviction.
+		// TODO: Handle overflow
+		_ctimeMissed.add(delta);
 	}
-	
+
 	public static long getMultiLevelFnHits() {
 		return _numHitsFunc.longValue();
 	}
@@ -139,11 +154,21 @@ public class LineageCacheStatistics {
 		return _numHitsSB.longValue();
 	}
 
-	public static void incrementPRwExecTime(long delta) {
-		// Total time spent executing lineage rewrites.
-		_ctimeRewriteEx.add(delta);
+	public static void incrementGpuHits() {
+		// Number of times single instruction results are reused in the gpu.
+		_numHitsGpu.increment();
 	}
-	
+
+	public static void incrementGpuAsyncEvicts() {
+		// Number of gpu cache entries moved to cpu cache via the background thread
+		_numAsyncEvictGpu.increment();
+	}
+
+	public static void incrementGpuSyncEvicts() {
+		// Number of gpu cache entries moved to cpu cache during malloc 
+		_numSyncEvictGpu.increment();
+	}
+
 	public static String displayHits() {
 		StringBuilder sb = new StringBuilder();
 		sb.append(_numHitsMem.longValue());
@@ -180,25 +205,28 @@ public class LineageCacheStatistics {
 		return sb.toString();
 	}
 	
-	public static String displayTime() {
+	public static String displayFSTime() {
 		StringBuilder sb = new StringBuilder();
 		sb.append(String.format("%.3f", ((double)_ctimeFSRead.longValue())/1000000000)); //in sec
 		sb.append("/");
 		sb.append(String.format("%.3f", ((double)_ctimeFSWrite.longValue())/1000000000)); //in sec
 		return sb.toString();
 	}
-	
-	public static String displayCostingTime() {
+	public static String displayComputeTime() {
 		StringBuilder sb = new StringBuilder();
-		sb.append(String.format("%.3f", ((double)_ctimeCosting.longValue())/1000000000)); //in sec
+		sb.append(String.format("%.3f", ((double)_ctimeSaved.longValue())/1000000000)); //in sec
+		sb.append("/");
+		sb.append(String.format("%.3f", ((double)_ctimeMissed.longValue())/1000000000)); //in sec
 		return sb.toString();
 	}
 
-	public static String displayRewriteTime() {
+	public static String displayGpuStats() {
 		StringBuilder sb = new StringBuilder();
-		sb.append(String.format("%.3f", ((double)_ctimeRewrite.longValue())/1000000000)); //in sec
+		sb.append(_numHitsGpu.longValue());
 		sb.append("/");
-		sb.append(String.format("%.3f", ((double)_ctimeRewriteEx.longValue())/1000000000)); //in sec
+		sb.append(_numAsyncEvictGpu.longValue());
+		sb.append("/");
+		sb.append(_numSyncEvictGpu.longValue());
 		return sb.toString();
 	}
 }

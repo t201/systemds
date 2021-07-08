@@ -26,7 +26,7 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
@@ -40,8 +40,8 @@ public class FullMatrixMultiplicationUltraSparseTest extends AutomatedTestBase
 	private final static double eps = 1e-10;
 	
 	private final static int rowsA = 1501;
-	private final static int colsA = 1703;
-	private final static int rowsB = 1703;
+	private final static int colsA = 1603;
+	private final static int rowsB = 1603;
 	private final static int colsB = 1107;
 	
 	private final static double sparsity1 = 0.7;
@@ -172,13 +172,13 @@ public class FullMatrixMultiplicationUltraSparseTest extends AutomatedTestBase
 			double[][] B = getRandomMatrix(rowsB, colsB, 0, 1, sparsityRight, 3); 
 			writeInputMatrix("B", B, true);
 	
-			boolean exceptionExpected = false;
-			runTest(true, exceptionExpected, null, -1); 
+			
+			runTest(true, false, null, -1); 
 			runRScript(true); 
 			
 			//compare matrices 
-			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("C");
-			HashMap<CellIndex, Double> rfile  = readRMatrixFromFS("C");
+			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("C");
+			HashMap<CellIndex, Double> rfile  = readRMatrixFromExpectedDir("C");
 			TestUtils.compareMatrices(dmlfile, rfile, eps, "Stat-DML", "Stat-R");
 		}
 		finally {

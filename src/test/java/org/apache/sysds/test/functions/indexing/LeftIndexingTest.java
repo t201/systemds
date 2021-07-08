@@ -26,7 +26,7 @@ import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
 import org.apache.sysds.hops.LeftIndexingOp;
 import org.apache.sysds.hops.LeftIndexingOp.LeftIndexingMethod;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
@@ -158,8 +158,8 @@ public class LeftIndexingTest extends AutomatedTestBase
 	
 		for(String file: config.getOutputFiles())
 		{
-			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS(file);
-			HashMap<CellIndex, Double> rfile = readRMatrixFromFS(file);
+			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir(file);
+			HashMap<CellIndex, Double> rfile = readRMatrixFromExpectedDir(file);
 		//	System.out.println(file+"-DML: "+dmlfile);
 		//	System.out.println(file+"-R: "+rfile);
 			TestUtils.compareMatrices(dmlfile, rfile, epsilon, file+"-DML", file+"-R");

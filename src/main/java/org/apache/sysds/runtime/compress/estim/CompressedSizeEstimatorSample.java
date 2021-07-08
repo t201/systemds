@@ -19,112 +19,160 @@
 
 package org.apache.sysds.runtime.compress.estim;
 
-import java.util.Arrays;
 import java.util.HashMap;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.sysds.runtime.DMLRuntimeException;
-import org.apache.sysds.runtime.compress.BitmapEncoder;
+import org.apache.commons.lang.NotImplementedException;
 import org.apache.sysds.runtime.compress.CompressionSettings;
-import org.apache.sysds.runtime.compress.UncompressedBitmap;
-import org.apache.sysds.runtime.compress.estim.sample.HassAndStokes;
+import org.apache.sysds.runtime.compress.colgroup.AColGroup.CompressionType;
+import org.apache.sysds.runtime.compress.colgroup.mapping.AMapToData;
+import org.apache.sysds.runtime.compress.colgroup.mapping.MapToFactory;
+import org.apache.sysds.runtime.compress.estim.sample.SampleEstimatorFactory;
+import org.apache.sysds.runtime.compress.lib.BitmapEncoder;
+import org.apache.sysds.runtime.compress.utils.ABitmap;
+import org.apache.sysds.runtime.data.SparseBlock;
+import org.apache.sysds.runtime.data.SparseBlockMCSR;
+import org.apache.sysds.runtime.data.SparseRow;
+import org.apache.sysds.runtime.matrix.data.LibMatrixReorg;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
 import org.apache.sysds.runtime.util.UtilFunctions;
 
 public class CompressedSizeEstimatorSample extends CompressedSizeEstimator {
 
-	private static final Log LOG = LogFactory.getLog(CompressedSizeEstimatorSample.class.getName());
-
-	private int[] _sampleRows = null;
+	private int[] _sampleRows;
+	private MatrixBlock _sample;
 	private HashMap<Integer, Double> _solveCache = null;
 
 	/**
 	 * CompressedSizeEstimatorSample, samples from the input data and estimates the size of the compressed matrix.
 	 * 
-	 * @param data         The input data sampled from
-	 * @param compSettings The Settings used for the sampling, and compression, contains information such as seed.
-	 * @param sampleSize   Size of the sampling used
+	 * @param data       The input data toSample from
+	 * @param cs         The Settings used for the sampling, and compression, contains information such as seed.
+	 * @param sampleSize The size to sample from the data.
 	 */
-	public CompressedSizeEstimatorSample(MatrixBlock data, CompressionSettings compSettings, int sampleSize) {
-		super(data, compSettings);
-		// get sample of rows, incl eager extraction
-		if(_numRows < sampleSize) {
-			throw new DMLRuntimeException("SampleSize should always be less than number of rows");
-		}
+	public CompressedSizeEstimatorSample(MatrixBlock data, CompressionSettings cs, int sampleSize) {
+		super(data, cs);
+		_sample = sampleData(sampleSize);
+	}
 
-		_sampleRows = getSortedUniformSample(_numRows, sampleSize, _compSettings.seed);
+	public MatrixBlock getSample() {
+		return _sample;
+	}
 
-		if(CompressedSizeEstimatorFactory.EXTRACT_SAMPLE_ONCE) {
-			MatrixBlock select = new MatrixBlock(_numRows, 1, false);
-			for(int i = 0; i < sampleSize; i++)
-				select.quickSetValue(_sampleRows[i], 0, 1);
-			_data = _data.removeEmptyOperations(new MatrixBlock(), !_compSettings.transposeInput, true, select);
-		}
-
-		// establish estimator-local cache for numeric solve
+	public MatrixBlock sampleData(int sampleSize) {
+		_sampleRows = CompressedSizeEstimatorSample.getSortedUniformSample(_numRows, sampleSize, _cs.seed);
 		_solveCache = new HashMap<>();
+		MatrixBlock sampledMatrixBlock;
+		if(_data.isInSparseFormat() && !_cs.transposed) {
+			sampledMatrixBlock = new MatrixBlock(_sampleRows.length, _data.getNumColumns(), true);
+			SparseRow[] rows = new SparseRow[_sampleRows.length];
+			SparseBlock in = _data.getSparseBlock();
+			for(int i = 0; i < _sampleRows.length; i++)
+				rows[i] = in.get(_sampleRows[i]);
+
+			sampledMatrixBlock.setSparseBlock(new SparseBlockMCSR(rows, false));
+			sampledMatrixBlock.recomputeNonZeros();
+			_transposed = true;
+			sampledMatrixBlock = LibMatrixReorg.transposeInPlace(sampledMatrixBlock, 16);
+		}
+		else {
+			MatrixBlock select = (_cs.transposed) ? new MatrixBlock(_data.getNumColumns(), 1,
+				false) : new MatrixBlock(_data.getNumRows(), 1, false);
+			for(int i = 0; i < _sampleRows.length; i++)
+				select.appendValue(_sampleRows[i], 0, 1);
+
+			sampledMatrixBlock = _data.removeEmptyOperations(new MatrixBlock(), !_cs.transposed, true, select);
+		}
+
+		if(sampledMatrixBlock.isEmpty())
+			return null;
+		else
+			return sampledMatrixBlock;
+
 	}
 
 	@Override
-	public CompressedSizeInfoColGroup estimateCompressedColGroupSize(int[] colIndexes) {
-		int sampleSize = _sampleRows.length;
-		int numCols = colIndexes.length;
-		int[] sampleRows = _sampleRows;
+	public CompressedSizeInfoColGroup estimateCompressedColGroupSize(int[] colIndexes, int nrUniqueUpperBound) {
 
 		// extract statistics from sample
-		UncompressedBitmap ubm = CompressedSizeEstimatorFactory.EXTRACT_SAMPLE_ONCE ? BitmapEncoder
-			.extractBitmap(colIndexes, _data, _compSettings) : BitmapEncoder
-				.extractBitmapFromSample(colIndexes, _data, sampleRows, _compSettings);
-		CompressedSizeEstimationFactors fact = CompressedSizeEstimationFactors
-			.computeSizeEstimationFactors(ubm, false, _numRows, numCols);
+		final ABitmap ubm = BitmapEncoder.extractBitmap(colIndexes, _sample, _transposed);
+		final EstimationFactors sampleFacts = EstimationFactors.computeSizeEstimationFactors(ubm, false, colIndexes);
+		final AMapToData map = MapToFactory.create(ubm);
 
-		// estimate number of distinct values (incl fixes for anomalies w/ large sample fraction)
-		int totalCardinality = getNumDistinctValues(ubm, _numRows, sampleRows, _solveCache);
-		totalCardinality = Math.max(totalCardinality, fact.numVals);
-		totalCardinality = Math.min(totalCardinality, _numRows);
+		// result facts
+		EstimationFactors em = estimateCompressionFactors(sampleFacts, map, colIndexes, nrUniqueUpperBound);
+		return new CompressedSizeInfoColGroup(em, _cs.validCompressions, map);
+	}
 
-		// estimate unseen values
-		int unseenVals = totalCardinality - fact.numVals;
+	@Override
+	public CompressedSizeInfoColGroup estimateJoinCompressedSize(int[] joined, CompressedSizeInfoColGroup g1,
+		CompressedSizeInfoColGroup g2) {
+		final int g1V = g1.getMap().getUnique();
+		final int g2V = g2.getMap().getUnique();
+		final int nrUniqueUpperBound = g1V * g2V;
 
-		// estimate number of non-zeros (conservatively round up)
-		double C = Math.max(1 - (double) fact.numSingle / sampleSize, (double) sampleSize / _numRows);
-		int numZeros = sampleSize - fact.numOffs; // >=0
-		int numNonZeros = (int) Math.ceil(_numRows - (double) _numRows / sampleSize * C * numZeros);
-		numNonZeros = Math.max(numNonZeros, totalCardinality); // handle anomaly of zi=0
+		final AMapToData map = MapToFactory.join(g1.getMap(), g2.getMap());
+		EstimationFactors sampleFacts = EstimationFactors.computeSizeEstimation(joined, map,
+			_cs.validCompressions.contains(CompressionType.RLE), map.size(), false);
 
-		if(totalCardinality <= 0 || unseenVals < 0 || numZeros < 0 || numNonZeros <= 0)
-			LOG.warn("Invalid estimates detected for " + Arrays.toString(colIndexes) + ": " + totalCardinality + " "
-				+ unseenVals + " " + numZeros + " " + numNonZeros);
+		// result facts
+		EstimationFactors em = estimateCompressionFactors(sampleFacts, map, joined, nrUniqueUpperBound);
+		return new CompressedSizeInfoColGroup(em, _cs.validCompressions, map);
+	}
 
+	private EstimationFactors estimateCompressionFactors(EstimationFactors sampleFacts, AMapToData map,
+		int[] colIndexes, int nrUniqueUpperBound) {
+		final int numZerosInSample = sampleFacts.numRows - sampleFacts.numOffs;
+		final int sampleSize = _sampleRows.length;
+
+		if(numZerosInSample == sampleSize) {
+			final int nCol = sampleFacts.cols.length;
+			/**
+			 * Since we sample, and this column seems to be empty we set the return to 1 value detected. aka 1 value,
+			 * and 1 offset. This makes it more robust in the coCoding of Columns
+			 */
+			final int largestInstanceCount = _numRows - 1;
+			return new EstimationFactors(colIndexes, 1, 1, largestInstanceCount, new int[] {largestInstanceCount}, 2, 1,
+				_numRows, sampleFacts.lossy, true, (double) 1 / _numRows, (double) 1 / nCol);
+		}
+		else {
+
+			final double scalingFactor = ((double) _numRows / sampleSize);
+			// Estimate number of distinct values (incl fixes for anomalies w/ large sample fraction)
+			final int totalCardinality = Math.max(map.getUnique(), Math.min(_numRows,
+				getEstimatedDistinctCount(sampleFacts.frequencies, nrUniqueUpperBound)));
+
+			// estimate number of non-zeros (conservatively round up)
+			final double C = Math.max(1 - (double) sampleFacts.numSingle / sampleSize, (double) sampleSize / _numRows);
+			final int numNonZeros = Math.max((int) Math.floor(_numRows - scalingFactor * C * numZerosInSample),
+				totalCardinality);
+
+			final int totalNumRuns = getNumRuns(map, sampleFacts.numVals, sampleSize, _numRows, _sampleRows);
+
+			final int largestInstanceCount = Math.min(_numRows, (int) Math.floor(sampleFacts.largestOff * scalingFactor));
+
+			return new EstimationFactors(colIndexes, totalCardinality, numNonZeros, largestInstanceCount,
+				sampleFacts.frequencies, totalNumRuns, sampleFacts.numSingle, _numRows, sampleFacts.lossy,
+				sampleFacts.zeroIsMostFrequent, sampleFacts.overAllSparsity, sampleFacts.tupleSparsity);
+		}
+	}
+
+	private int getEstimatedDistinctCount( int[] frequencies, int upperBound) {
+		return Math.min(SampleEstimatorFactory.distinctCount( frequencies, _numRows, _sampleRows.length,
+			_cs.estimationType, _solveCache), upperBound);
+	}
+
+	private int getNumRuns(AMapToData map, int numVals, int sampleSize, int totalNumRows, int[] sampleRows) {
 		// estimate number of segments and number of runs incl correction for
 		// empty segments and empty runs (via expected mean of offset value)
 		// int numUnseenSeg = (int) (unseenVals * Math.ceil((double) _numRows / BitmapEncoder.BITMAP_BLOCK_SZ / 2));
-		int totalNumRuns = getNumRuns(ubm, sampleSize, _numRows, sampleRows);
-
-		// TODO. Make it possible to detect if the values contains a 0.
-		// Same case as in the Exact estimator, there is no way of knowing currently if a specific column or row
-		// contains
-		// a 0.
-		boolean containsZero = false;
-
-		CompressedSizeEstimationFactors totalFacts = new CompressedSizeEstimationFactors(numCols, totalCardinality,
-			numNonZeros, totalNumRuns, fact.numSingle, _numRows, containsZero);
-
-		// construct new size info summary
-		return new CompressedSizeInfoColGroup(totalFacts, _compSettings.validCompressions);
+		return _cs.validCompressions.contains(CompressionType.RLE) && numVals > 0 ? getNumRuns(map, sampleSize,
+			_numRows, _sampleRows) : 0;
 	}
 
-	private static int getNumDistinctValues(UncompressedBitmap ubm, int numRows, int[] sampleRows,
-		HashMap<Integer, Double> solveCache) {
-		return HassAndStokes.haasAndStokes(ubm, numRows, sampleRows.length, solveCache);
-	}
-
-	private static int getNumRuns(UncompressedBitmap ubm, int sampleSize, int totalNumRows, int[] sampleRows) {
+	// Fix getNumRuns when adding RLE back.
+	@SuppressWarnings("unused")
+	private static int getNumRuns(ABitmap ubm, int sampleSize, int totalNumRows, int[] sampleRows) {
 		int numVals = ubm.getNumValues();
-		// all values in the sample are zeros
-		if(numVals == 0)
-			return 0;
 		double numRuns = 0;
 		for(int vi = 0; vi < numVals; vi++) {
 			int[] offsets = ubm.getOffsetsList(vi).extractValues();
@@ -281,17 +329,34 @@ public class CompressedSizeEstimatorSample extends CompressedSizeEstimator {
 		return (int) Math.min(Math.round(numRuns), Integer.MAX_VALUE);
 	}
 
+	private static int getNumRuns(AMapToData map, int sampleSize, int totalNumRows, int[] sampleRows) {
+
+		throw new NotImplementedException("Not Supported ever since the ubm was replaced by the map");
+	}
+
 	/**
 	 * Returns a sorted array of n integers, drawn uniformly from the range [0,range).
 	 * 
-	 * @param range    the range
-	 * @param smplSize sample size
+	 * @param range      the range
+	 * @param sampleSize sample size
 	 * @return sorted array of integers
 	 */
-	private static int[] getSortedUniformSample(int range, int smplSize, long seed) {
-		if(smplSize == 0)
-			throw new DMLRuntimeException("Sample Size of 0 is invalid");
-		return UtilFunctions.getSortedSampleIndexes(range, smplSize, seed);
+	private static int[] getSortedUniformSample(int range, int sampleSize, long seed) {
+		return UtilFunctions.getSortedSampleIndexes(range, sampleSize, seed);
 	}
 
+	@Override
+	public String toString() {
+		StringBuilder sb = new StringBuilder();
+		sb.append(super.toString());
+		sb.append(" sampleSize: ");
+		sb.append(_sampleRows.length);
+		sb.append(" transposed: ");
+		sb.append(_transposed);
+		sb.append(" cols: ");
+		sb.append(_numCols);
+		sb.append(" rows: ");
+		sb.append(_numRows);
+		return sb.toString();
+	}
 }

@@ -22,18 +22,22 @@ package org.apache.sysds.test.functions.codegen;
 import java.io.File;
 import java.util.HashMap;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.sysds.common.Types.ExecMode;
 import org.apache.sysds.hops.OptimizerUtils;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
 import org.apache.sysds.test.TestUtils;
+import org.junit.Assert;
+import org.junit.Test;
 
 public class RowConv2DOperationsTest extends AutomatedTestBase
 {
+	private static final Log LOG = LogFactory.getLog(RowConv2DOperationsTest.class.getName());
+
 	private final static String TEST_NAME1 = "RowConv2DTest";
 	private final static String TEST_DIR = "functions/codegen/";
 	private final static String TEST_CLASS_DIR = TEST_DIR + RowConv2DOperationsTest.class.getSimpleName() + "/";
@@ -84,7 +88,7 @@ public class RowConv2DOperationsTest extends AutomatedTestBase
 			
 			String HOME = SCRIPT_DIR + TEST_DIR;
 			fullDMLScriptName = HOME + testname + ".dml";
-			programArgs = new String[]{"-explain", "recompile_runtime", "-stats", "-args",
+			programArgs = new String[]{"recompile_runtime", "-stats", "-args",
 				String.valueOf(imgSize), String.valueOf(numImg), String.valueOf(numChannels),
 				String.valueOf(numFilters), String.valueOf(filterSize), String.valueOf(stride),
 				String.valueOf(pad), output("B"), sparseVal1, sparseVal2 };
@@ -100,8 +104,8 @@ public class RowConv2DOperationsTest extends AutomatedTestBase
 			runRScript(true);
 			
 			//compare matrices 
-			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("B");
-			HashMap<CellIndex, Double> rfile  = readRMatrixFromFS("B");
+			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("B");
+			HashMap<CellIndex, Double> rfile  = readRMatrixFromExpectedDir("B");
 			TestUtils.compareMatrices(dmlfile, rfile, eps, "Stat-DML", "Stat-R");
 			Assert.assertTrue(heavyHittersContainsSubString("spoofRA") 
 				|| heavyHittersContainsSubString("sp_spoofRA"));
@@ -121,7 +125,7 @@ public class RowConv2DOperationsTest extends AutomatedTestBase
 	@Override
 	protected File getConfigTemplateFile() {
 		// Instrumentation in this test's output log to show custom configuration file used for template.
-		System.out.println("This test case overrides default configuration with " + TEST_CONF_FILE.getPath());
+		LOG.info("This test case overrides default configuration with " + TEST_CONF_FILE.getPath());
 		return TEST_CONF_FILE;
 	}
 }

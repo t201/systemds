@@ -22,18 +22,22 @@ package org.apache.sysds.test.functions.codegen;
 import java.io.File;
 import java.util.HashMap;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.sysds.common.Types.ExecMode;
 import org.apache.sysds.hops.OptimizerUtils;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
 import org.apache.sysds.test.TestUtils;
+import org.junit.Assert;
+import org.junit.Test;
 
 public class MultiAggTmplTest extends AutomatedTestBase 
 {
+	private static final Log LOG = LogFactory.getLog(MultiAggTmplTest.class.getName());
+
 	private static final String TEST_NAME = "multiAggPattern";
 	private static final String TEST_NAME1 = TEST_NAME+"1"; //min(X>7), max(X>7)
 	private static final String TEST_NAME2 = TEST_NAME+"2"; //sum(X>7), sum((X>7)^2)
@@ -174,7 +178,7 @@ public class MultiAggTmplTest extends AutomatedTestBase
 			
 			String HOME = SCRIPT_DIR + TEST_DIR;
 			fullDMLScriptName = HOME + testname + ".dml";
-			programArgs = new String[]{"-explain", "-stats", "-args", output("S") };
+			programArgs = new String[]{"-stats", "-args", output("S") };
 			
 			fullRScriptName = HOME + testname + ".R";
 			rCmd = getRCmd(inputDir(), expectedDir());
@@ -185,8 +189,8 @@ public class MultiAggTmplTest extends AutomatedTestBase
 			runRScript(true); 
 			
 			//compare matrices 
-			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("S");
-			HashMap<CellIndex, Double> rfile  = readRMatrixFromFS("S");
+			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("S");
+			HashMap<CellIndex, Double> rfile  = readRMatrixFromExpectedDir("S");
 			TestUtils.compareMatrices(dmlfile, rfile, eps, "Stat-DML", "Stat-R");
 			Assert.assertTrue(heavyHittersContainsSubString("spoofMA") 
 					|| heavyHittersContainsSubString("sp_spoofMA"));
@@ -206,7 +210,7 @@ public class MultiAggTmplTest extends AutomatedTestBase
 	@Override
 	protected File getConfigTemplateFile() {
 		// Instrumentation in this test's output log to show custom configuration file used for template.
-		System.out.println("This test case overrides default configuration with " + TEST_CONF_FILE.getPath());
+		LOG.info("This test case overrides default configuration with " + TEST_CONF_FILE.getPath());
 		return TEST_CONF_FILE;
 	}
 }

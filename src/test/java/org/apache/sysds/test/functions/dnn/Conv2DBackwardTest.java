@@ -23,7 +23,7 @@ import java.util.HashMap;
 import org.junit.Test;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.runtime.util.DnnUtils;
 import org.apache.sysds.test.AutomatedTestBase;
@@ -198,7 +198,7 @@ public class Conv2DBackwardTest extends AutomatedTestBase
 			
 			String RI_HOME = SCRIPT_DIR + TEST_DIR;
 			fullDMLScriptName = RI_HOME + TEST_NAME + ".dml";
-			programArgs = new String[]{"-explain", "-args", 
+			programArgs = new String[]{"-args", 
 				String.valueOf(imgSize), String.valueOf(numImg), 
 				String.valueOf(numChannels), String.valueOf(numFilters), 
 				String.valueOf(filterSize), String.valueOf(stride), String.valueOf(pad), 
@@ -213,8 +213,8 @@ public class Conv2DBackwardTest extends AutomatedTestBase
 			runTest(true, false, null, -1);
 			runRScript(true);
 			
-			HashMap<CellIndex, Double> bHM = readRMatrixFromFS("B");
-			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("B");
+			HashMap<CellIndex, Double> bHM = readRMatrixFromExpectedDir("B");
+			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("B");
 			TestUtils.compareMatrices(dmlfile, bHM, epsilon, "B-DML", "NumPy");
 		}
 		finally {

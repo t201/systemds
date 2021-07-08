@@ -26,7 +26,7 @@ import java.util.List;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.lops.FunctionCallCP;
 import org.apache.sysds.lops.Lop;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.parser.DMLProgram;
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.ValueType;
@@ -48,11 +48,13 @@ public class FunctionOp extends Hop
 		UNKNOWN
 	}
 	
-	public static final String OPSTRING = "extfunct";
+	public static final String OPCODE = "fcall";
 	
 	private FunctionType _type = null;
 	private String _fnamespace = null;
-	private String _fname = null; 
+	private String _fname = null;
+	private boolean _opt = true; //call to optimized/unoptimized
+	private boolean _pseudo = false;
 	
 	private String[] _inputNames = null;  // A,B in C = foo(A=X, B=Y)
 	private String[] _outputNames = null; // C in C = foo(A=X, B=Y)
@@ -66,8 +68,11 @@ public class FunctionOp extends Hop
 		this(type, fnamespace, fname, inputNames, inputs, outputNames, false);
 		_outputHops = outputHops;
 	}
-
-	public FunctionOp(FunctionType type, String fnamespace, String fname, String[] inputNames, List<Hop> inputs, String[] outputNames, boolean singleOut) 
+	public FunctionOp(FunctionType type, String fnamespace, String fname, String[] inputNames, List<Hop> inputs, String[] outputNames, boolean singleOut) {
+		this(type, fnamespace, fname, inputNames, inputs, outputNames, singleOut, false);
+	}
+	
+	public FunctionOp(FunctionType type, String fnamespace, String fname, String[] inputNames, List<Hop> inputs, String[] outputNames, boolean singleOut, boolean pseudo) 
 	{
 		super(fnamespace + Program.KEY_DELIM + fname, DataType.UNKNOWN, ValueType.UNKNOWN );
 		
@@ -76,6 +81,7 @@ public class FunctionOp extends Hop
 		_fname = fname;
 		_inputNames = inputNames;
 		_outputNames = outputNames;
+		_pseudo = pseudo;
 		
 		for( Hop in : inputs ) {
 			getInput().add(in);
@@ -131,6 +137,14 @@ public class FunctionOp extends Hop
 	
 	public FunctionType getFunctionType() {
 		return _type;
+	}
+	
+	public void setCallOptimized(boolean opt) {
+		_opt = opt;
+	}
+	
+	public boolean isPseudoFunctionCall() {
+		return _pseudo;
 	}
 
 	@Override
@@ -281,19 +295,18 @@ public class FunctionOp extends Hop
 			tmp.add( in.constructLops() );
 		
 		//construct function call
-		Lop fcall = new FunctionCallCP(tmp, _fnamespace, _fname, _inputNames, _outputNames, _outputHops, et);
+		Lop fcall = new FunctionCallCP(tmp, _fnamespace, _fname, _inputNames, _outputNames, _outputHops, _opt, et);
 		setLineNumbers(fcall);
 		setLops(fcall);
 		
 		//note: no reblock lop because outputs directly bound
-		
+
 		return getLops();
 	}
 
 	@Override
-	public String getOpString() 
-	{
-		return OPSTRING;
+	public String getOpString() {
+		return OPCODE;
 	}
 
 	@Override
@@ -358,6 +371,7 @@ public class FunctionOp extends Hop
 		ret._type = _type;
 		ret._fnamespace = _fnamespace;
 		ret._fname = _fname;
+		ret._opt = _opt;
 		ret._inputNames = (_inputNames!=null) ? _inputNames.clone() : null;
 		ret._outputNames = _outputNames.clone();
 		if( _outputHops != null )
@@ -369,5 +383,10 @@ public class FunctionOp extends Hop
 	@Override
 	public boolean compare(Hop that) {
 		return false;
+	}
+
+	@Override
+	public String toString(){
+		return getOpString();
 	}
 }

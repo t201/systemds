@@ -25,7 +25,7 @@ import org.junit.Assert;
 import org.junit.Test;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.instructions.Instruction;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.runtime.meta.MatrixCharacteristics;
@@ -128,17 +128,17 @@ public class RBindCBindMatrixTest extends AutomatedTestBase
 			rCmd = "Rscript" + " " + fullRScriptName + " " + inputDir() + " "+ expectedDir();
 			
 			double[][] A = getRandomMatrix(rows1, cols, min, max, sparsity, 823);
-	        writeInputMatrixWithMTD("A", A, true);
-	        double[][] B= getRandomMatrix(rows2, cols, min, max, sparsity, 923);
-	        writeInputMatrixWithMTD("B", B, true);
-	        
-	        //execute dml and r scripts
-	        runTest(true, false, null, -1);
+			writeInputMatrixWithMTD("A", A, true);
+			double[][] B= getRandomMatrix(rows2, cols, min, max, sparsity, 923);
+			writeInputMatrixWithMTD("B", B, true);
+
+			
+			runTest(true, false, null, -1);
 			runRScript(true);
 	
 			//compare results
-			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("C");
-			HashMap<CellIndex, Double> rfile = readRMatrixFromFS("C");
+			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("C");
+			HashMap<CellIndex, Double> rfile = readRMatrixFromExpectedDir("C");
 			TestUtils.compareMatrices(dmlfile, rfile, epsilon, "DML", "R");
 			
 			//check dml output meta data

@@ -41,7 +41,7 @@ public class AppendChainTest extends AutomatedTestBase
 	private final static int min=1;
 	private final static int max=100;
 	
-	private final static int rows = 1692;
+	private final static int rows = 492;
 	private final static int cols1 = 1059;
 	private final static int cols2a = 1;
 	private final static int cols3a = 1;
@@ -137,14 +137,15 @@ public class AppendChainTest extends AutomatedTestBase
 	
 			int expectedCompiled = platform==ExecMode.SINGLE_NODE ?
 				0 : 8; //3x(rblk+chkpt), append, write
+			
 			runTest(true, false, null, expectedCompiled);
 			runRScript(true);
 			
 			Assert.assertEquals("Wrong number of executed Spark jobs.",
 				expectedCompiled, Statistics.getNoOfExecutedSPInst());
 			for(String file: config.getOutputFiles()) {
-				HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS(file);
-				HashMap<CellIndex, Double> rfile = readRMatrixFromFS(file);
+				HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir(file);
+				HashMap<CellIndex, Double> rfile = readRMatrixFromExpectedDir(file);
 				TestUtils.compareMatrices(dmlfile, rfile, epsilon, file+"-DML", file+"-R");
 			}
 		}

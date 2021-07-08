@@ -24,7 +24,7 @@ import org.junit.Test;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
 import org.apache.sysds.hops.OptimizerUtils;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.instructions.Instruction;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
@@ -199,8 +199,8 @@ public class RowSumsSqTest extends AutomatedTestBase {
             runRScript(true);
 
             // Compare output matrices
-            HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS(OUTPUT_NAME);
-            HashMap<CellIndex, Double> rfile  = readRMatrixFromFS(OUTPUT_NAME);
+            HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir(OUTPUT_NAME);
+            HashMap<CellIndex, Double> rfile  = readRMatrixFromExpectedDir(OUTPUT_NAME);
             TestUtils.compareMatrices(dmlfile, rfile, eps, "Stat-DML", "Stat-R");
 
             // On CP and Spark modes, check that the rewrite actually

@@ -39,7 +39,7 @@ OPTIONS
 -v=    --overrideVersion=<no-default>
          Specifies the version of the release
   
--u=    --gitUrl=https://github.com/apache/systemml.git
+-u=    --gitUrl=https://github.com/apache/systemds.git
          The URL of the repository to clone
   
 -g=    --gitCommitHash=master
@@ -143,7 +143,7 @@ fi
 GIT_REF=${GIT_REF:-master}
 if [[ -z "$GIT_URL" ]]; then
     echo "Using default URL"
-    GIT_URL="https://github.com/apache/systemml.git"
+    GIT_URL="https://github.com/apache/systemds.git"
 fi
 
 BASE_DIR=$(pwd)
@@ -214,9 +214,14 @@ if [ -z ${SKIP_SIGN} ]; then
 fi
 
 # skipped mvn clean verify release:update-versions verify install:install deploy:deploy
+#CMD="$MVN $PUBLISH_PROFILES deploy \
+#  -DskiptTests \
+#  -DaltDeploymentRepository=altDepRepo::default::file://$RELEASE_STAGING_LOCATION \
+#  ${GPG_OPTS}"
+
 CMD="$MVN $PUBLISH_PROFILES deploy \
   -DskiptTests \
-  -DaltDeploymentRepository=altDepRepo::default::file://$RELEASE_STAGING_LOCATION \
+  -DaltDeploymentRepository=altDepRepo::default::file:///temp \
   ${GPG_OPTS}"
 
 echo "Executing: " "$CMD"

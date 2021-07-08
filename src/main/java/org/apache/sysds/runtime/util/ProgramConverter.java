@@ -31,17 +31,24 @@ import org.apache.sysds.conf.CompilerConfig;
 import org.apache.sysds.conf.CompilerConfig.ConfigType;
 import org.apache.sysds.conf.ConfigurationManager;
 import org.apache.sysds.conf.DMLConfig;
+import org.apache.sysds.hops.FunctionOp;
 import org.apache.sysds.hops.Hop;
 import org.apache.sysds.hops.OptimizerUtils;
 import org.apache.sysds.hops.recompile.Recompiler;
 import org.apache.sysds.lops.Lop;
 import org.apache.sysds.parser.DMLProgram;
 import org.apache.sysds.parser.DataIdentifier;
+import org.apache.sysds.parser.ForStatement;
 import org.apache.sysds.parser.ForStatementBlock;
+import org.apache.sysds.parser.FunctionStatement;
+import org.apache.sysds.parser.FunctionStatementBlock;
+import org.apache.sysds.parser.IfStatement;
 import org.apache.sysds.parser.IfStatementBlock;
+import org.apache.sysds.parser.ParForStatement;
 import org.apache.sysds.parser.ParForStatementBlock;
 import org.apache.sysds.parser.ParForStatementBlock.ResultVar;
 import org.apache.sysds.parser.StatementBlock;
+import org.apache.sysds.parser.WhileStatement;
 import org.apache.sysds.parser.WhileStatementBlock;
 import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.runtime.codegen.CodegenUtils;
@@ -57,6 +64,7 @@ import org.apache.sysds.runtime.controlprogram.ParForProgramBlock.PartitionForma
 import org.apache.sysds.runtime.controlprogram.Program;
 import org.apache.sysds.runtime.controlprogram.ProgramBlock;
 import org.apache.sysds.runtime.controlprogram.WhileProgramBlock;
+import org.apache.sysds.runtime.controlprogram.caching.FrameObject;
 import org.apache.sysds.runtime.controlprogram.caching.MatrixObject;
 import org.apache.sysds.runtime.controlprogram.caching.MatrixObject.UpdateType;
 import org.apache.sysds.runtime.controlprogram.context.ExecutionContext;
@@ -69,8 +77,10 @@ import org.apache.sysds.runtime.instructions.Instruction;
 import org.apache.sysds.runtime.instructions.InstructionParser;
 import org.apache.sysds.runtime.instructions.cp.BooleanObject;
 import org.apache.sysds.runtime.instructions.cp.CPInstruction;
+import org.apache.sysds.runtime.instructions.cp.CPOperand;
 import org.apache.sysds.runtime.instructions.cp.Data;
 import org.apache.sysds.runtime.instructions.cp.DoubleObject;
+import org.apache.sysds.runtime.instructions.cp.EvalNaryCPInstruction;
 import org.apache.sysds.runtime.instructions.cp.FunctionCallCPInstruction;
 import org.apache.sysds.runtime.instructions.cp.IntObject;
 import org.apache.sysds.runtime.instructions.cp.ListObject;
@@ -90,7 +100,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map.Entry;
+import java.util.Set;
 import java.util.StringTokenizer;
 import java.util.stream.Collectors;
 
@@ -152,8 +162,6 @@ public class ProgramConverter
 	public static final String PSBODY_END = LEVELOUT + CDATA_END;
 	
 	//exception msgs
-	public static final String NOT_SUPPORTED_EXTERNALFUNCTION_PB = "Not supported: ExternalFunctionProgramBlock contains MR instructions. " +
-																	"(ExternalFunctionPRogramBlockCP can be used)";
 	public static final String NOT_SUPPORTED_SPARK_INSTRUCTION   = "Not supported: Instructions of type other than CP instructions";
 	public static final String NOT_SUPPORTED_SPARK_PARFOR        = "Not supported: Nested ParFOR REMOTE_SPARK due to possible deadlocks." +
 																	"(LOCAL can be used for innner ParFOR)";
@@ -220,7 +228,7 @@ public class ProgramConverter
 	 * @param forceDeepCopy if true, force deep copy
 	 * @return list of program blocks
 	 */
-	public static ArrayList<ProgramBlock> rcreateDeepCopyProgramBlocks(ArrayList<ProgramBlock> childBlocks, long pid, int IDPrefix, HashSet<String> fnStack, HashSet<String> fnCreated, boolean plain, boolean forceDeepCopy) 
+	public static ArrayList<ProgramBlock> rcreateDeepCopyProgramBlocks(ArrayList<ProgramBlock> childBlocks, long pid, int IDPrefix, Set<String> fnStack, Set<String> fnCreated, boolean plain, boolean forceDeepCopy) 
 	{
 		ArrayList<ProgramBlock> tmp = new ArrayList<>();
 		
@@ -268,20 +276,24 @@ public class ProgramConverter
 		return tmp;
 	}
 
-	public static WhileProgramBlock createDeepCopyWhileProgramBlock(WhileProgramBlock wpb, long pid, int IDPrefix, Program prog, HashSet<String> fnStack, HashSet<String> fnCreated, boolean plain, boolean forceDeepCopy) {
+	public static WhileProgramBlock createDeepCopyWhileProgramBlock(WhileProgramBlock wpb, long pid, int IDPrefix, Program prog, Set<String> fnStack, Set<String> fnCreated, boolean plain, boolean forceDeepCopy) {
 		ArrayList<Instruction> predinst = createDeepCopyInstructionSet(wpb.getPredicate(), pid, IDPrefix, prog, fnStack, fnCreated, plain, true);
 		WhileProgramBlock tmpPB = new WhileProgramBlock(prog, predinst);
-		tmpPB.setStatementBlock( createWhileStatementBlockCopy((WhileStatementBlock) wpb.getStatementBlock(), pid, plain, forceDeepCopy) );
+		StatementBlock sb = ConfigurationManager.getCompilerConfigFlag(ConfigType.ALLOW_PARALLEL_DYN_RECOMPILATION) ?
+			createWhileStatementBlockCopy((WhileStatementBlock) wpb.getStatementBlock(), forceDeepCopy) : wpb.getStatementBlock();
+		tmpPB.setStatementBlock( sb );
 		tmpPB.setThreadID(pid);
 		tmpPB.setChildBlocks(rcreateDeepCopyProgramBlocks(wpb.getChildBlocks(), pid, IDPrefix, fnStack, fnCreated, plain, forceDeepCopy));
 		tmpPB.setExitInstruction(wpb.getExitInstruction());
 		return tmpPB;
 	}
 
-	public static IfProgramBlock createDeepCopyIfProgramBlock(IfProgramBlock ipb, long pid, int IDPrefix, Program prog, HashSet<String> fnStack, HashSet<String> fnCreated, boolean plain, boolean forceDeepCopy) {
+	public static IfProgramBlock createDeepCopyIfProgramBlock(IfProgramBlock ipb, long pid, int IDPrefix, Program prog, Set<String> fnStack, Set<String> fnCreated, boolean plain, boolean forceDeepCopy) {
 		ArrayList<Instruction> predinst = createDeepCopyInstructionSet(ipb.getPredicate(), pid, IDPrefix, prog, fnStack, fnCreated, plain, true);
 		IfProgramBlock tmpPB = new IfProgramBlock(prog, predinst);
-		tmpPB.setStatementBlock( createIfStatementBlockCopy((IfStatementBlock)ipb.getStatementBlock(), pid, plain, forceDeepCopy ) );
+		StatementBlock sb = ConfigurationManager.getCompilerConfigFlag(ConfigType.ALLOW_PARALLEL_DYN_RECOMPILATION) ?
+			createIfStatementBlockCopy((IfStatementBlock)ipb.getStatementBlock(), forceDeepCopy ) : ipb.getStatementBlock();
+		tmpPB.setStatementBlock( sb );
 		tmpPB.setThreadID(pid);
 		tmpPB.setChildBlocksIfBody(rcreateDeepCopyProgramBlocks(ipb.getChildBlocksIfBody(), pid, IDPrefix, fnStack, fnCreated, plain, forceDeepCopy));
 		tmpPB.setChildBlocksElseBody(rcreateDeepCopyProgramBlocks(ipb.getChildBlocksElseBody(), pid, IDPrefix, fnStack, fnCreated, plain, forceDeepCopy));
@@ -289,9 +301,11 @@ public class ProgramConverter
 		return tmpPB;
 	}
 
-	public static ForProgramBlock createDeepCopyForProgramBlock(ForProgramBlock fpb, long pid, int IDPrefix, Program prog, HashSet<String> fnStack, HashSet<String> fnCreated, boolean plain, boolean forceDeepCopy) {
+	public static ForProgramBlock createDeepCopyForProgramBlock(ForProgramBlock fpb, long pid, int IDPrefix, Program prog, Set<String> fnStack, Set<String> fnCreated, boolean plain, boolean forceDeepCopy) {
 		ForProgramBlock tmpPB = new ForProgramBlock(prog,fpb.getIterVar());
-		tmpPB.setStatementBlock( createForStatementBlockCopy((ForStatementBlock)fpb.getStatementBlock(), pid, plain, forceDeepCopy));
+		StatementBlock sb = ConfigurationManager.getCompilerConfigFlag(ConfigType.ALLOW_PARALLEL_DYN_RECOMPILATION) ?
+			createForStatementBlockCopy((ForStatementBlock)fpb.getStatementBlock(), forceDeepCopy) : fpb.getStatementBlock();
+		tmpPB.setStatementBlock(sb);
 		tmpPB.setThreadID(pid);
 		tmpPB.setFromInstructions( createDeepCopyInstructionSet(fpb.getFromInstructions(), pid, IDPrefix, prog, fnStack, fnCreated, plain, true) );
 		tmpPB.setToInstructions( createDeepCopyInstructionSet(fpb.getToInstructions(), pid, IDPrefix, prog, fnStack, fnCreated, plain, true) );
@@ -311,7 +325,7 @@ public class ProgramConverter
 		return tmpPB;
 	}
 
-	public static ParForProgramBlock createDeepCopyParForProgramBlock(ParForProgramBlock pfpb, long pid, int IDPrefix, Program prog, HashSet<String> fnStack, HashSet<String> fnCreated, boolean plain, boolean forceDeepCopy) {
+	public static ParForProgramBlock createDeepCopyParForProgramBlock(ParForProgramBlock pfpb, long pid, int IDPrefix, Program prog, Set<String> fnStack, Set<String> fnCreated, boolean plain, boolean forceDeepCopy) {
 		ParForProgramBlock tmpPB = null;
 		
 		if( IDPrefix == -1 ) //still on master node
@@ -319,7 +333,9 @@ public class ProgramConverter
 		else //child of remote ParWorker at any level
 			tmpPB = new ParForProgramBlock(IDPrefix, prog, pfpb.getIterVar(), pfpb.getParForParams(), pfpb.getResultVariables());
 		
-		tmpPB.setStatementBlock( createForStatementBlockCopy( (ForStatementBlock) pfpb.getStatementBlock(), pid, plain, forceDeepCopy) );
+		StatementBlock sb = ConfigurationManager.getCompilerConfigFlag(ConfigType.ALLOW_PARALLEL_DYN_RECOMPILATION) ?
+			createForStatementBlockCopy((ForStatementBlock)pfpb.getStatementBlock(), forceDeepCopy) : pfpb.getStatementBlock();
+		tmpPB.setStatementBlock( sb );
 		tmpPB.setThreadID(pid);
 		
 		tmpPB.disableOptimization(); //already done in top-level parfor
@@ -353,7 +369,7 @@ public class ProgramConverter
 	 * @param fnCreated ?
 	 * @param plain ?
 	 */
-	public static void createDeepCopyFunctionProgramBlock(String namespace, String oldName, long pid, int IDPrefix, Program prog, HashSet<String> fnStack, HashSet<String> fnCreated, boolean plain) 
+	public static void createDeepCopyFunctionProgramBlock(String namespace, String oldName, long pid, int IDPrefix, Program prog, Set<String> fnStack, Set<String> fnCreated, boolean plain) 
 	{
 		//fpb guaranteed to be non-null (checked inside getFunctionProgramBlock)
 		FunctionProgramBlock fpb = prog.getFunctionProgramBlock(namespace, oldName);
@@ -387,12 +403,14 @@ public class ProgramConverter
 		//copy.setVariables( (LocalVariableMap) fpb.getVariables() ); //implicit cloning
 		//note: instructions not used by function program block
 		
-		//put 
-		prog.addFunctionProgramBlock(namespace, fnameNew, copy);
-		fnCreated.add(DMLProgram.constructFunctionKey(namespace, fnameNew));
+		//put if not existing (recursive processing might have added it)
+		if( !prog.getFunctionProgramBlocks().containsKey(fnameNewKey) ) {
+			prog.addFunctionProgramBlock(namespace, fnameNew, copy);
+			fnCreated.add(DMLProgram.constructFunctionKey(namespace, fnameNew));
+		}
 	}
 
-	public static FunctionProgramBlock createDeepCopyFunctionProgramBlock(FunctionProgramBlock fpb, HashSet<String> fnStack, HashSet<String> fnCreated) 
+	public static FunctionProgramBlock createDeepCopyFunctionProgramBlock(FunctionProgramBlock fpb, Set<String> fnStack, Set<String> fnCreated) 
 	{
 		if( fpb == null )
 			throw new DMLRuntimeException("Unable to create a deep copy of a non-existing FunctionProgramBlock.");
@@ -432,7 +450,7 @@ public class ProgramConverter
 	 * @param cpFunctions ?
 	 * @return list of instructions
 	 */
-	public static ArrayList<Instruction> createDeepCopyInstructionSet(ArrayList<Instruction> instSet, long pid, int IDPrefix, Program prog, HashSet<String> fnStack, HashSet<String> fnCreated, boolean plain, boolean cpFunctions) {
+	public static ArrayList<Instruction> createDeepCopyInstructionSet(ArrayList<Instruction> instSet, long pid, int IDPrefix, Program prog, Set<String> fnStack, Set<String> fnCreated, boolean plain, boolean cpFunctions) {
 		ArrayList<Instruction> tmp = new ArrayList<>();
 		for( Instruction inst : instSet ) {
 			if( inst instanceof FunctionCallCPInstruction && cpFunctions ) {
@@ -477,6 +495,72 @@ public class ProgramConverter
 		
 		return inst;
 	}
+	
+	public static FunctionStatementBlock createDeepCopyFunctionStatementBlock(FunctionStatementBlock fsb, Set<String> fnStack, Set<String> fnCreated) {
+		FunctionStatement fstmt = (FunctionStatement) fsb.getStatement(0);
+		FunctionStatementBlock retSb = new FunctionStatementBlock();
+		FunctionStatement retStmt = new FunctionStatement();
+		retStmt.setName(fstmt.getName());
+		retStmt.setInputParams(fstmt.getInputParams());
+		retStmt.setInputDefaults(fstmt.getInputDefaults());
+		retStmt.setOutputParams(fstmt.getOutputParams());
+		retSb.addStatement(retStmt);
+		retSb.setDMLProg(fsb.getDMLProg());
+		retSb.setParseInfo(fsb);
+		retSb.setLiveIn( fsb.liveIn() );
+		retSb.setLiveOut( fsb.liveOut() );
+		for( StatementBlock sb : fstmt.getBody() )
+			retStmt.getBody().add(rCreateDeepCopyStatementBlock(sb));
+		return retSb;
+	}
+	
+	public static StatementBlock rCreateDeepCopyStatementBlock(StatementBlock sb) {
+		StatementBlock ret = null;
+		if( sb instanceof IfStatementBlock ) {
+			IfStatementBlock orig = (IfStatementBlock) sb;
+			IfStatementBlock isb = createIfStatementBlockCopy(orig, true);
+			IfStatement origstmt = (IfStatement) orig.getStatement(0);
+			IfStatement istmt = new IfStatement(); //only shallow
+			istmt.setConditionalPredicate(origstmt.getConditionalPredicate());
+			isb.setStatements(CollectionUtils.asArrayList(istmt));
+			for( StatementBlock c : origstmt.getIfBody() )
+				istmt.addStatementBlockIfBody(rCreateDeepCopyStatementBlock(c));
+			for( StatementBlock c : origstmt.getElseBody() )
+				istmt.addStatementBlockElseBody(rCreateDeepCopyStatementBlock(c));
+			ret = isb;
+		}
+		else if( sb instanceof WhileStatementBlock ) {
+			WhileStatementBlock orig = (WhileStatementBlock) sb;
+			WhileStatementBlock wsb = createWhileStatementBlockCopy(orig, true);
+			WhileStatement origstmt = (WhileStatement) orig.getStatement(0);
+			WhileStatement wstmt = new WhileStatement(); //only shallow
+			wstmt.setPredicate(origstmt.getConditionalPredicate());
+			wsb.setStatements(CollectionUtils.asArrayList(wstmt));
+			for( StatementBlock c : origstmt.getBody() )
+				wstmt.addStatementBlock(rCreateDeepCopyStatementBlock(c));
+			ret = wsb;
+		}
+		else if( sb instanceof ForStatementBlock ) { //incl parfor
+			ForStatementBlock orig = (ForStatementBlock) sb;
+			ForStatementBlock fsb = createForStatementBlockCopy(orig, true);
+			ForStatement origstmt = (ForStatement) orig.getStatement(0);
+			ForStatement fstmt = (origstmt instanceof ParForStatement) ?
+				new ParForStatement() : new ForStatement(); //only shallow
+			fstmt.setPredicate(origstmt.getIterablePredicate());
+			fsb.setStatements(CollectionUtils.asArrayList(fstmt));
+			for( StatementBlock c : origstmt.getBody() )
+				fstmt.addStatementBlock(rCreateDeepCopyStatementBlock(c));
+			ret = fsb;
+		}
+		else {
+			StatementBlock bsb = createStatementBlockCopy(sb, -1, true, true);
+			for( Hop root : bsb.getHops() )
+				if( root instanceof FunctionOp )
+					((FunctionOp)root).setCallOptimized(false);
+			ret = bsb;
+		}
+		return ret;
+	}
 
 	public static StatementBlock createStatementBlockCopy( StatementBlock sb, long pid, boolean plain, boolean forceDeepCopy )
 	{
@@ -484,9 +568,8 @@ public class ProgramConverter
 		
 		try
 		{
-			if( ConfigurationManager.getCompilerConfigFlag(ConfigType.ALLOW_PARALLEL_DYN_RECOMPILATION) 
-				&& sb != null  //forced deep copy for function recompilation
-				&& (Recompiler.requiresRecompilation( sb.getHops() ) || forceDeepCopy)  )
+			if( sb != null  //forced deep copy for function recompilation
+				&& (Recompiler.requiresRecompilation( sb.getHops() ) || forceDeepCopy) )
 			{
 				//create new statement (shallow copy livein/liveout for recompile, line numbers for explain)
 				ret = new StatementBlock();
@@ -516,14 +599,13 @@ public class ProgramConverter
 		return ret;
 	}
 
-	public static IfStatementBlock createIfStatementBlockCopy( IfStatementBlock sb, long pid, boolean plain, boolean forceDeepCopy ) 
+	public static IfStatementBlock createIfStatementBlockCopy( IfStatementBlock sb, boolean forceDeepCopy ) 
 	{
 		IfStatementBlock ret = null;
 		
 		try
 		{
-			if( ConfigurationManager.getCompilerConfigFlag(ConfigType.ALLOW_PARALLEL_DYN_RECOMPILATION) 
-				&& sb != null //forced deep copy for function recompile
+			if( sb != null //forced deep copy for function recompile
 				&& (Recompiler.requiresRecompilation( sb.getPredicateHops() ) || forceDeepCopy)  )
 			{
 				//create new statement (shallow copy livein/liveout for recompile, line numbers for explain)
@@ -555,14 +637,13 @@ public class ProgramConverter
 		return ret;
 	}
 
-	public static WhileStatementBlock createWhileStatementBlockCopy( WhileStatementBlock sb, long pid, boolean plain, boolean forceDeepCopy ) 
+	public static WhileStatementBlock createWhileStatementBlockCopy( WhileStatementBlock sb, boolean forceDeepCopy ) 
 	{
 		WhileStatementBlock ret = null;
 		
 		try
 		{
-			if( ConfigurationManager.getCompilerConfigFlag(ConfigType.ALLOW_PARALLEL_DYN_RECOMPILATION) 
-				&& sb != null  //forced deep copy for function recompile
+			if( sb != null  //forced deep copy for function recompile
 				&& (Recompiler.requiresRecompilation( sb.getPredicateHops() ) || forceDeepCopy)  )
 			{
 				//create new statement (shallow copy livein/liveout for recompile, line numbers for explain)
@@ -595,18 +676,16 @@ public class ProgramConverter
 		return ret;
 	}
 
-	public static ForStatementBlock createForStatementBlockCopy( ForStatementBlock sb, long pid, boolean plain, boolean forceDeepCopy ) 
+	public static ForStatementBlock createForStatementBlockCopy( ForStatementBlock sb, boolean forceDeepCopy ) 
 	{
 		ForStatementBlock ret = null;
 		
 		try
 		{
-			if( ConfigurationManager.getCompilerConfigFlag(ConfigType.ALLOW_PARALLEL_DYN_RECOMPILATION) 
-				&& sb != null 
-				&& ( Recompiler.requiresRecompilation(sb.getFromHops()) ||
-					 Recompiler.requiresRecompilation(sb.getToHops()) ||
-					 Recompiler.requiresRecompilation(sb.getIncrementHops()) ||
-					 forceDeepCopy )  )
+			if( sb != null && (forceDeepCopy
+				|| Recompiler.requiresRecompilation(sb.getFromHops())
+				|| Recompiler.requiresRecompilation(sb.getToHops())
+				|| Recompiler.requiresRecompilation(sb.getIncrementHops())) )
 			{
 				ret = (sb instanceof ParForStatementBlock) ? new ParForStatementBlock() : new ForStatementBlock();
 				
@@ -623,18 +702,12 @@ public class ProgramConverter
 				ret.setStatements( sb.getStatements() );
 				
 				//deep copy predicate hops dag for concurrent recompile
-				if( sb.requiresFromRecompilation() ){
-					Hop hops = Recompiler.deepCopyHopsDag( sb.getFromHops() );
-					ret.setFromHops( hops );
-				}
-				if( sb.requiresToRecompilation() ){
-					Hop hops = Recompiler.deepCopyHopsDag( sb.getToHops() );
-					ret.setToHops( hops );
-				}
-				if( sb.requiresIncrementRecompilation() ){
-					Hop hops = Recompiler.deepCopyHopsDag( sb.getIncrementHops() );
-					ret.setIncrementHops( hops );
-				}
+				//or on create full statement block copies
+				ret.setFromHops( Recompiler.deepCopyHopsDag(sb.getFromHops()));
+				ret.setToHops(Recompiler.deepCopyHopsDag(sb.getToHops()));
+				if( sb.getIncrementHops() != null )
+					ret.setIncrementHops(Recompiler.deepCopyHopsDag(sb.getIncrementHops()));
+				
 				ret.updatePredicateRecompilationFlags();
 				ret.setNondeterministic(sb.isNondeterministic());
 			}
@@ -679,7 +752,7 @@ public class ProgramConverter
 		//handle program
 		builder.append(PROG_BEGIN);
 		builder.append(NEWLINE);
-		builder.append(rSerializeFunctionProgramBlocks(ec.getProgram().getFunctionProgramBlocks(),
+		builder.append(rSerializeFunctionProgramBlocks(ec.getProgram(),
 			new HashSet<>(ec.getProgram().getFunctionProgramBlocks().keySet()), clsMap));
 		builder.append(PROG_END);
 		builder.append(NEWLINE);
@@ -776,22 +849,21 @@ public class ProgramConverter
 		return sb.toString();
 	}
 
-	private static String serializeProgram( Program prog, ArrayList<ProgramBlock> pbs, HashMap<String, byte[]> clsMap ) {
-		//note program contains variables, programblocks and function program blocks 
+	public static String serializeProgram( Program prog, ArrayList<ProgramBlock> pbs, HashMap<String, byte[]> clsMap) {
+		//note program contains variables, programblocks and function program blocks
 		//but in order to avoid redundancy, we only serialize function program blocks
-		HashMap<String, FunctionProgramBlock> fpb = prog.getFunctionProgramBlocks();
 		HashSet<String> cand = new HashSet<>();
 		rFindSerializationCandidates(pbs, cand);
-		return rSerializeFunctionProgramBlocks( fpb, cand, clsMap );
+		return rSerializeFunctionProgramBlocks(prog, cand, clsMap);
 	}
 
-	private static void rFindSerializationCandidates( ArrayList<ProgramBlock> pbs, HashSet<String> cand ) 
+	private static void rFindSerializationCandidates( ArrayList<ProgramBlock> pbs, HashSet<String> cand)
 	{
 		for( ProgramBlock pb : pbs )
 		{
 			if( pb instanceof WhileProgramBlock ) {
 				WhileProgramBlock wpb = (WhileProgramBlock) pb;
-				rFindSerializationCandidates(wpb.getChildBlocks(), cand );
+				rFindSerializationCandidates(wpb.getChildBlocks(), cand);
 			}
 			else if ( pb instanceof ForProgramBlock || pb instanceof ParForProgramBlock ) {
 				ForProgramBlock fpb = (ForProgramBlock) pb; 
@@ -805,7 +877,7 @@ public class ProgramConverter
 			}
 			else if( pb instanceof BasicProgramBlock ) { 
 				BasicProgramBlock bpb = (BasicProgramBlock) pb;
-				for( Instruction inst : bpb.getInstructions() )
+				for( Instruction inst : bpb.getInstructions() ) {
 					if( inst instanceof FunctionCallCPInstruction ) {
 						FunctionCallCPInstruction fci = (FunctionCallCPInstruction) inst;
 						String fkey = DMLProgram.constructFunctionKey(fci.getNamespace(), fci.getFunctionName());
@@ -816,6 +888,16 @@ public class ProgramConverter
 							rFindSerializationCandidates(fpb.getChildBlocks(), cand);
 						}
 					}
+					else if(inst instanceof EvalNaryCPInstruction) {
+						CPOperand fname = ((EvalNaryCPInstruction)inst).getInputs()[0];
+						if( fname.isLiteral() )
+							cand.add(DMLProgram.constructFunctionKey(DMLProgram.DEFAULT_NAMESPACE, fname.getName()));
+						else //add all potential targets, other than builtin functions
+							pb.getProgram().getFunctionProgramBlocks().keySet().stream()
+								.filter(s -> !s.startsWith(DMLProgram.BUILTIN_NAMESPACE))
+								.forEach(s -> cand.add(s));
+					}
+				}
 			}
 		}
 	}
@@ -847,7 +929,7 @@ public class ProgramConverter
 				//name = so.getName();
 				value = so.getStringValue();
 				break;
-			case MATRIX:
+			case MATRIX: {
 				MatrixObject mo = (MatrixObject) dat;
 				MetaDataFormat md = (MetaDataFormat) dat.getMetaData();
 				DataCharacteristics dc = md.getDataCharacteristics();
@@ -865,6 +947,21 @@ public class ProgramConverter
 				metaData[7] = String.valueOf(mo.isHDFSFileExists());
 				metaData[8] = String.valueOf(mo.isCleanupEnabled());
 				break;
+			}
+			case FRAME: {
+				FrameObject fo = (FrameObject) dat;
+				MetaDataFormat md = (MetaDataFormat) dat.getMetaData();
+				DataCharacteristics dc = md.getDataCharacteristics();
+				value = fo.getFileName();
+				metaData = new String[6];
+				metaData[0] = String.valueOf(dc.getRows());
+				metaData[1] = String.valueOf(dc.getCols());
+				metaData[2] = String.valueOf(dc.getBlocksize());
+				metaData[3] = md.getFileFormat().toString();
+				metaData[4] = String.valueOf(fo.isHDFSFileExists());
+				metaData[5] = String.valueOf(fo.isCleanupEnabled());
+				break;
+			}
 			case LIST:
 				// SCHEMA: <name>|<datatype>|<valuetype>|value|<metadata>|<tab>element1<tab>element2<tab>element3 (this is the list)
 				//         (for the element1) <listName-index>|<datatype>|<valuetype>|value
@@ -912,12 +1009,12 @@ public class ProgramConverter
 	}
 
 	@SuppressWarnings("all")
-	private static String serializeInstructions( ArrayList<Instruction> inst, HashMap<String, byte[]> clsMap ) 
+	private static String serializeInstructions( ArrayList<Instruction> inst, HashMap<String, byte[]> clsMap )
 	{
 		StringBuilder sb = new StringBuilder();
 		int count = 0;
 		for( Instruction linst : inst ) {
-			//check that only cp instruction are transmitted 
+			//check that only cp instruction are transmitted
 			if( !( linst instanceof CPInstruction) )
 				throw new DMLRuntimeException( NOT_SUPPORTED_SPARK_INSTRUCTION + " " +linst.getClass().getName()+"\n"+linst );
 			
@@ -1017,19 +1114,25 @@ public class ProgramConverter
 		return sb.toString();
 	}
 
-	private static String rSerializeFunctionProgramBlocks(HashMap<String,FunctionProgramBlock> pbs, HashSet<String> cand, HashMap<String, byte[]> clsMap) {
+	private static String rSerializeFunctionProgramBlocks(Program prog, HashSet<String> cand, HashMap<String, byte[]> clsMap) {
 		StringBuilder sb = new StringBuilder();
 		int count = 0;
-		for( Entry<String,FunctionProgramBlock> pb : pbs.entrySet() ) {
-			if( !cand.contains(pb.getKey()) ) //skip function not included in the parfor body
+		for( String fkey : prog.getFunctionProgramBlocks().keySet() ) {
+			if( !cand.contains(fkey) ) //skip function not included in the parfor body
 				continue;
-			if( count>0 ) {
+			if( count>0 )
 				sb.append( ELEMENT_DELIM );
-				sb.append( NEWLINE );
-			}
-			sb.append( pb.getKey() );
+			sb.append( fkey );
 			sb.append( KEY_VALUE_DELIM );
-			sb.append( rSerializeProgramBlock(pb.getValue(), clsMap) );
+			FunctionProgramBlock fpb1 = prog.getFunctionProgramBlock(fkey, true);
+			sb.append( rSerializeProgramBlock(fpb1, clsMap) );
+			if( prog.containsFunctionProgramBlock(fkey, false) ) {
+				sb.append( ELEMENT_DELIM );
+				sb.append( fkey );
+				sb.append( KEY_VALUE_DELIM );
+				FunctionProgramBlock fpb2 = prog.getFunctionProgramBlock(fkey, false);
+				sb.append( rSerializeProgramBlock(fpb2, clsMap) );
+			}
 			count++;
 		}
 		sb.append(NEWLINE);
@@ -1042,7 +1145,6 @@ public class ProgramConverter
 		for( ProgramBlock pb : pbs ) {
 			if( count>0 ) {
 				sb.append( ELEMENT_DELIM );
-				sb.append(NEWLINE);
 			}
 			sb.append( rSerializeProgramBlock(pb, clsMap) );
 			count++;
@@ -1268,20 +1370,14 @@ public class ProgramConverter
 	public static Program parseProgram( String in, int id ) {
 		String lin = in.substring( PROG_BEGIN.length(),in.length()- PROG_END.length()).trim();
 		Program prog = new Program();
-		HashMap<String,FunctionProgramBlock> fc = parseFunctionProgramBlocks(lin, prog, id);
-		for( Entry<String,FunctionProgramBlock> e : fc.entrySet() ) {
-			String[] keypart = e.getKey().split( Program.KEY_DELIM );
-			String namespace = keypart[0];
-			String name      = keypart[1];
-			prog.addFunctionProgramBlock(namespace, name, e.getValue());
-		}
+		parseFunctionProgramBlocks(lin, prog, id);
 		return prog;
 	}
 
 	private static LocalVariableMap parseVariables(String in) {
 		LocalVariableMap ret = null;
 		if( in.length()> VARS_BEGIN.length() + VARS_END.length()) {
-			String varStr = in.substring( VARS_BEGIN.length(),in.length()- VARS_END.length()).trim();
+			String varStr = in.substring( VARS_BEGIN.length(),in.length() - VARS_END.length()).trim();
 			ret = LocalVariableMap.deserialize(varStr);
 		}
 		else { //empty input symbol table
@@ -1297,9 +1393,11 @@ public class ProgramConverter
 			String lvar  = st.nextToken(); //with ID = CP_CHILD_THREAD+id for current use
 			//put first copy into prog (for direct use)
 			int index = lvar.indexOf( KEY_VALUE_DELIM );
-			String tmp1 = lvar.substring(0, index); // + CP_CHILD_THREAD+id;
-			String tmp2 = lvar.substring(index + 1);
-			ret.put(tmp1, (FunctionProgramBlock)rParseProgramBlock(tmp2, prog, id));
+			String fkey = lvar.substring(0, index);
+			String tmp = lvar.substring(index + 1);
+			boolean opt = !prog.containsFunctionProgramBlock(fkey, true);
+			prog.addFunctionProgramBlock(fkey,
+				(FunctionProgramBlock)rParseProgramBlock(tmp, prog, id), opt);
 		}
 		return ret;
 	}
@@ -1564,6 +1662,20 @@ public class ProgramConverter
 				dat = mo;
 				break;
 			}
+			case FRAME: {
+				FrameObject mo = new FrameObject(valString);
+				long rows = Long.parseLong(st.nextToken());
+				long cols = Long.parseLong(st.nextToken());
+				int blen = Integer.parseInt(st.nextToken());
+				FileFormat fmt = FileFormat.safeValueOf(st.nextToken());
+				MatrixCharacteristics mc = new MatrixCharacteristics(rows, cols, blen, -1);
+				MetaDataFormat md = new MetaDataFormat(mc, fmt);
+				mo.setMetaData( md );
+				mo.setHDFSFileExists(Boolean.valueOf(st.nextToken()));
+				mo.enableCleanup(Boolean.valueOf(st.nextToken()));
+				dat = mo;
+				break;
+			}
 			case LIST:
 				int size = Integer.parseInt(st.nextToken());
 				String namesStr = st.nextToken();
@@ -1615,7 +1727,8 @@ public class ProgramConverter
 	 * @return instruction
 	 */
 	private static Instruction saveReplaceThreadID( Instruction inst, String pattern, String replacement ) {
-		if ( inst instanceof VariableCPInstruction ) { //createvar, setfilename
+		if ( inst instanceof VariableCPInstruction //createvar, setfilename
+			|| inst instanceof EvalNaryCPInstruction ) {
 			//update in-memory representation
 			inst.updateInstructionThreadID(pattern, replacement);
 		}

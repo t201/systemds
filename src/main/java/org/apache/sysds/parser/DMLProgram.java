@@ -21,33 +21,34 @@ package org.apache.sysds.parser;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 
 import org.apache.sysds.runtime.controlprogram.Program;
 
-
-
 public class DMLProgram 
 {
-	private ArrayList<StatementBlock> _blocks;
-	private HashMap<String, FunctionStatementBlock> _functionBlocks;
-	private HashMap<String,DMLProgram> _namespaces;
 	public static final String DEFAULT_NAMESPACE = ".defaultNS";
+	public static final String BUILTIN_NAMESPACE = ".builtinNS";
 	public static final String INTERNAL_NAMESPACE = "_internal"; // used for multi-return builtin functions
+	
+	private ArrayList<StatementBlock> _blocks;
+	private Map<String, FunctionDictionary<FunctionStatementBlock>> _namespaces;
+	private boolean _containsRemoteParfor;
 	
 	public DMLProgram(){
 		_blocks = new ArrayList<>();
-		_functionBlocks = new HashMap<>();
 		_namespaces = new HashMap<>();
+		_containsRemoteParfor = false;
 	}
 	
 	public DMLProgram(String namespace) {
 		this();
-		_namespaces.put(namespace, new DMLProgram());
+		createNamespace(namespace);
 	}
 	
-	public HashMap<String,DMLProgram> getNamespaces(){
+	public Map<String,FunctionDictionary<FunctionStatementBlock>> getNamespaces(){
 		return _namespaces;
 	}
 
@@ -57,6 +58,27 @@ public class DMLProgram
 	
 	public int getNumStatementBlocks(){
 		return _blocks.size();
+	}
+	
+	public void setContainsRemoteParfor(boolean flag) {
+		_containsRemoteParfor = flag;
+	}
+	
+	public boolean containsRemoteParfor() {
+		return _containsRemoteParfor;
+	}
+	
+	public static boolean isInternalNamespace(String namespace) {
+		return DEFAULT_NAMESPACE.equals(namespace)
+			|| BUILTIN_NAMESPACE.equals(namespace)
+			|| INTERNAL_NAMESPACE.equals(namespace);
+	}
+	
+	public FunctionDictionary<FunctionStatementBlock> createNamespace(String namespace) {
+		// create on demand, necessary to avoid overwriting existing functions
+		if( !_namespaces.containsKey(namespace) )
+			_namespaces.put(namespace, new FunctionDictionary<>());
+		return _namespaces.get(namespace);
 	}
 
 	/**
@@ -76,74 +98,76 @@ public class DMLProgram
 	}
 	
 	public FunctionStatementBlock getFunctionStatementBlock(String namespaceKey, String functionName) {
-		DMLProgram namespaceProgram = this.getNamespaces().get(namespaceKey);
-		if (namespaceProgram == null)
+		FunctionDictionary<FunctionStatementBlock> dict = getNamespaces().get(namespaceKey);
+		if (dict == null)
 			return null;
 	
 		// for the namespace DMLProgram, get the specified function (if exists) in its current namespace
-		FunctionStatementBlock retVal = namespaceProgram._functionBlocks.get(functionName);
-		return retVal;
+		return dict.getFunction(functionName);
 	}
 	
 	public void removeFunctionStatementBlock(String namespaceKey, String functionName) {
-		DMLProgram namespaceProgram = this.getNamespaces().get(namespaceKey);
+		FunctionDictionary<FunctionStatementBlock> dict = getNamespaces().get(namespaceKey);
 		// for the namespace DMLProgram, get the specified function (if exists) in its current namespace
-		if (namespaceProgram != null)
-			namespaceProgram._functionBlocks.remove(functionName);
+		if (dict != null)
+			dict.removeFunction(functionName);
 	}
 	
-	public HashMap<String, FunctionStatementBlock> getFunctionStatementBlocks(String namespaceKey) {
-		DMLProgram namespaceProgram = this.getNamespaces().get(namespaceKey);
-		if (namespaceProgram == null){
+	public Map<String, FunctionStatementBlock> getFunctionStatementBlocks(String namespaceKey) {
+		FunctionDictionary<FunctionStatementBlock> dict = getNamespaces().get(namespaceKey);
+		if (dict == null)
 			throw new LanguageException("ERROR: namespace " + namespaceKey + " is undefined");
-		}
+		
 		// for the namespace DMLProgram, get the functions in its current namespace
-		return namespaceProgram._functionBlocks;
+		return dict.getFunctions();
 	}
 	
 	public boolean hasFunctionStatementBlocks() {
-		boolean ret = false;
-		for( DMLProgram nsProg : _namespaces.values() )
-			ret |= !nsProg._functionBlocks.isEmpty();
-		
-		return ret;
+		return _namespaces.values().stream()
+			.anyMatch(dict -> !dict.getFunctions().isEmpty());
 	}
 	
-	public ArrayList<FunctionStatementBlock> getFunctionStatementBlocks() {
-		ArrayList<FunctionStatementBlock> ret = new ArrayList<>();
-		for( DMLProgram nsProg : _namespaces.values() )
-			ret.addAll(nsProg._functionBlocks.values());
+	public List<FunctionStatementBlock> getFunctionStatementBlocks() {
+		List<FunctionStatementBlock> ret = new ArrayList<>();
+		for( FunctionDictionary<FunctionStatementBlock> dict : _namespaces.values() )
+			ret.addAll(dict.getFunctions().values());
 		return ret;
 	}
 	
 	public Map<String,FunctionStatementBlock> getNamedNSFunctionStatementBlocks() {
 		Map<String, FunctionStatementBlock> ret = new HashMap<>();
-		for( DMLProgram nsProg : _namespaces.values() )
-		for( Entry<String, FunctionStatementBlock> e : nsProg._functionBlocks.entrySet() )
-			ret.put(e.getKey(), e.getValue());
+		for( FunctionDictionary<FunctionStatementBlock> dict : _namespaces.values() )
+			for( Entry<String, FunctionStatementBlock> e : dict.getFunctions().entrySet() )
+				ret.put(e.getKey(), e.getValue());
 		return ret;
 	}
 	
-	public Map<String,FunctionStatementBlock> getNamedFunctionStatementBlocks() {
-		Map<String, FunctionStatementBlock> ret = new HashMap<>();
-		for( Entry<String, FunctionStatementBlock> e : _functionBlocks.entrySet() )
-			ret.put(e.getKey(), e.getValue());
-		return ret;
+	public FunctionDictionary<FunctionStatementBlock> getDefaultFunctionDictionary() {
+		return _namespaces.get(DEFAULT_NAMESPACE);
 	}
-
-	public boolean containsFunctionStatementBlock(String name) {
-		return _functionBlocks.containsKey(name);
+	
+	public FunctionDictionary<FunctionStatementBlock> getBuiltinFunctionDictionary() {
+		return _namespaces.get(BUILTIN_NAMESPACE);
+	}
+	
+	public FunctionDictionary<FunctionStatementBlock> getFunctionDictionary(String namespace) {
+		return _namespaces.get(namespace);
 	}
 	
 	public void addFunctionStatementBlock(String fname, FunctionStatementBlock fsb) {
-		_functionBlocks.put(fname, fsb);
+		addFunctionStatementBlock(DEFAULT_NAMESPACE, fname, fsb);
+	}
+
+	public void addFunctionStatementBlock( String namespace, String fname, FunctionStatementBlock fsb ) {
+		FunctionDictionary<FunctionStatementBlock> dict = getNamespaces().get(namespace);
+		if (dict == null)
+			throw new LanguageException( "Namespace does not exist." );
+		dict.addFunction(fname, fsb);
 	}
 	
-	public void addFunctionStatementBlock( String namespace, String fname, FunctionStatementBlock fsb ) {
-		DMLProgram namespaceProgram = this.getNamespaces().get(namespace);
-		if (namespaceProgram == null)
-			throw new LanguageException( "Namespace does not exist." );
-		namespaceProgram._functionBlocks.put(fname, fsb);
+	public void copyOriginalFunctions() {
+		for( FunctionDictionary<?> dict : getNamespaces().values() )
+			dict.copyOriginalFunctions();
 	}
 	
 	public ArrayList<StatementBlock> getStatementBlocks(){
@@ -186,12 +210,10 @@ public class DMLProgram
 		for (String namespaceKey : this.getNamespaces().keySet()){
 			
 			sb.append("NAMESPACE = " + namespaceKey + "\n");
-			DMLProgram namespaceProg = this.getNamespaces().get(namespaceKey);
-			
+			FunctionDictionary<FunctionStatementBlock> dict = getNamespaces().get(namespaceKey);
 			
 			sb.append("FUNCTIONS = ");
-			
-			for (FunctionStatementBlock fsb : namespaceProg._functionBlocks.values()){
+			for (FunctionStatementBlock fsb : dict.getFunctions().values()){
 				sb.append(fsb);
 				sb.append(", ");
 			}
@@ -217,4 +239,3 @@ public class DMLProgram
 		return fkey.split(Program.KEY_DELIM);
 	}
 }
-

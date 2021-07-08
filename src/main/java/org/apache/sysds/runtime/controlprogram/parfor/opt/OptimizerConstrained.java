@@ -22,9 +22,11 @@ package org.apache.sysds.runtime.controlprogram.parfor.opt;
 import java.util.HashMap;
 import java.util.HashSet;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.sysds.common.Types;
 import org.apache.sysds.conf.ConfigurationManager;
 import org.apache.sysds.hops.OptimizerUtils;
-import org.apache.sysds.lops.LopProperties;
 import org.apache.sysds.parser.ParForStatementBlock;
 import org.apache.sysds.parser.ParForStatementBlock.ResultVar;
 import org.apache.sysds.runtime.controlprogram.LocalVariableMap;
@@ -57,8 +59,8 @@ import org.apache.sysds.runtime.controlprogram.parfor.opt.OptNode.ParamType;
  * - 11) rewrite set result merge
  *
  */
-public class OptimizerConstrained extends OptimizerRuleBased
-{
+public class OptimizerConstrained extends OptimizerRuleBased {
+	private static final Log LOG = LogFactory.getLog(OptimizerConstrained.class.getName());
 
 	@Override
 	public POptMode getOptMode() {
@@ -118,7 +120,7 @@ public class OptimizerConstrained extends OptimizerRuleBased
 		LOG.debug(getOptMode()+" OPT: estimated new mem (serial exec) M="+toMB(M1) );
 		
 		//determine memory consumption for what-if: all-cp or partitioned
-		double M2 = _cost.getEstimate(TestMeasure.MEMORY_USAGE, pn, LopProperties.ExecType.CP);
+		double M2 = _cost.getEstimate(TestMeasure.MEMORY_USAGE, pn, Types.ExecType.CP);
 		LOG.debug(getOptMode()+" OPT: estimated new mem (serial exec, all CP) M="+toMB(M2) );
 		double M3 = _cost.getEstimate(TestMeasure.MEMORY_USAGE, pn, true);
 		LOG.debug(getOptMode()+" OPT: estimated new mem (cond partitioning) M="+toMB(M3) );

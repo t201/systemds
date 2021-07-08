@@ -30,6 +30,8 @@ import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.conf.ConfigurationManager;
 import org.apache.sysds.conf.DMLConfig;
 import org.apache.sysds.hops.OptimizerUtils;
+import org.apache.sysds.runtime.data.DenseBlock;
+import org.apache.sysds.runtime.data.DenseBlockFactory;
 import org.apache.sysds.utils.NativeHelper;
 import org.apache.sysds.utils.Statistics;
 
@@ -79,41 +81,65 @@ public class LibMatrixNative
 			return;
 		}
 		
-		if( NativeHelper.isNativeLibraryLoaded()
-			&& !isMatMultMemoryBound(m1.rlen, m1.clen, m2.clen) 
+		boolean isValidForNative = !isMatMultMemoryBound(m1.rlen, m1.clen, m2.clen) 
 			&& !m1.isInSparseFormat() && !m2.isInSparseFormat()
-			&& m1.getDenseBlock().isContiguous() && m2.getDenseBlock().isContiguous()
-			&& 8L * ret.getLength() < Integer.MAX_VALUE ) //contiguous but not allocated
+			&& (m1.getDenseBlock().isContiguous() || !isSinglePrecision())
+			&& m2.getDenseBlock().isContiguous() //contiguous but not allocated
+			&& 8L * ret.getLength() < Integer.MAX_VALUE;
+
+		if( NativeHelper.isNativeLibraryLoaded() && isValidForNative ) 
 		{
 			ret.sparse = false;
 			ret.allocateDenseBlock();
 			long start = DMLScript.STATISTICS ? System.nanoTime() : 0;
-			boolean rccode = false;
+			long nnz = 0;
 			if( isSinglePrecision() ) {
 				FloatBuffer fin1 = toFloatBuffer(m1.getDenseBlockValues(), inBuff, true);
 				FloatBuffer fin2 = toFloatBuffer(m2.getDenseBlockValues(), filterBuff, true);
 				FloatBuffer fout = toFloatBuffer(ret.getDenseBlockValues(), outBuff, false);
-				rccode = NativeHelper.smmdd(fin1, fin2, fout, 
+				nnz = NativeHelper.smmdd(fin1, fin2, fout, 
 					m1.getNumRows(), m1.getNumColumns(), m2.getNumColumns(), k);
 				fromFloatBuffer(outBuff.get(), ret.getDenseBlockValues());
 			}
 			else {
-				rccode = NativeHelper.dmmdd(m1.getDenseBlockValues(), m2.getDenseBlockValues(),
-					ret.getDenseBlockValues(), m1.getNumRows(), m1.getNumColumns(), m2.getNumColumns(), k);
+				DenseBlock a = m1.getDenseBlock();
+				if( a.isContiguous() ) {
+					nnz = NativeHelper.dmmdd(m1.getDenseBlockValues(), m2.getDenseBlockValues(),
+						ret.getDenseBlockValues(), m1.rlen, m1.clen, m2.clen, k);
+				}
+				else {
+					//sequential processing of individual blocks to 
+					//avoid segementation faults with concurrent multi-threaded BLAS calls
+					for(int bix = 0; bix < a.numBlocks(); bix++) {
+						double[] tmp = new double[a.blockSize(bix)*m2.clen];
+						nnz += NativeHelper.dmmdd(a.valuesAt(bix), m2.getDenseBlockValues(),
+							tmp, a.blockSize(bix), m1.clen, m2.clen, k);
+						int rl = bix * a.blockSize();
+						ret.getDenseBlock().set(rl, rl+a.blockSize(bix), 0, m2.clen,
+							DenseBlockFactory.createDenseBlock(tmp, new int[]{a.blockSize(bix),m2.clen}));
+					}
+				}
 			}
-			if (rccode) {
+			
+			if(nnz > -1) {
 				if(DMLScript.STATISTICS) {
 					Statistics.nativeLibMatrixMultTime += System.nanoTime() - start;
 					Statistics.numNativeLibMatrixMultCalls.increment();
 				}
-				ret.recomputeNonZeros();
+				ret.setNonZeros(nnz);
 				if(examSparsity)
 					ret.examSparsity();
 				return;
 			}
 			//else record failure and fallback to java
 			Statistics.incrementNativeFailuresCounter();
+			LOG.warn("matrixMult: Native mat mult failed. Falling back to java version ("
+				+ "loaded=" + NativeHelper.isNativeLibraryLoaded()
+				+ ", sparse=" + (m1.isInSparseFormat() | m2.isInSparseFormat()) + ")");
 		}
+		else if(isValidForNative)
+			LOG.warn("Was valid for native MM but native lib was not loaded");
+		
 		if (k == 1)
 			LibMatrixMult.matrixMult(m1, m2, ret, !examSparsity);
 		else
@@ -123,22 +149,47 @@ public class LibMatrixNative
 	public static void tsmm(MatrixBlock m1, MatrixBlock ret, boolean leftTrans, int k) {
 		if( m1.isEmptyBlock(false) )
 			return;
+		
 		if( NativeHelper.isNativeLibraryLoaded() && (ret.clen > 1 || ret.getLength()==1)
-			&& (!m1.sparse && m1.getDenseBlock().isContiguous() ) ) {
+			&& !LibMatrixMult.isOuterProductTSMM(m1.rlen, m1.clen, leftTrans)
+			&& !m1.sparse && (m1.getDenseBlock().isContiguous() | leftTrans) )
+		{
 			ret.sparse = false;
 			ret.allocateDenseBlock();
-			if( NativeHelper.tsmm(m1.getDenseBlockValues(), 
-				ret.getDenseBlockValues(), m1.rlen, m1.clen, leftTrans, k) ) 
-			{
-				// ToDo: add native tsmm() to stats
-				long nnz = (ret.clen==1) ? ret.recomputeNonZeros() :
-					LibMatrixMult.copyUpperToLowerTriangle(ret);
+			long start = DMLScript.STATISTICS ? System.nanoTime() : 0;
+			
+			DenseBlock a = m1.getDenseBlock();
+			double[] cvals = ret.getDenseBlockValues();
+			long nnz = 0;
+			if( a.isContiguous() ) {
+				nnz = NativeHelper.tsmm(a.valuesAt(0),
+					cvals, m1.rlen, m1.clen, leftTrans, k);
+			}
+			else { //large blocks (but only leftTrans)
+				//sequential processing of individual blocks to 
+				//avoid segementation faults with concurrent multi-threaded BLAS calls
+				IntStream.range(0, a.numBlocks()).forEach(bix -> {
+					double[] tmp = new double[m1.clen*m1.clen];
+					NativeHelper.tsmm(a.valuesAt(bix),
+						tmp, a.blockSize(bix), m1.clen, leftTrans, k);
+					LibMatrixMult.vectAdd(tmp, cvals, 0, 0, m1.clen*m1.clen);
+				});
+				nnz = ret.recomputeNonZeros();
+			}
+			//TODO flip upper triangular matrix down for consistent
+			//representations with the default java implementation?
+			
+			if(nnz > -1) {
+				if(DMLScript.STATISTICS) {
+					Statistics.nativeLibMatrixMultTime += System.nanoTime() - start;
+					Statistics.numNativeLibMatrixMultCalls.increment();
+				}
 				ret.setNonZeros(nnz);
 				ret.examSparsity();
 				return;
 			}
 			//fallback to default java implementation
-			LOG.info("Falling back to java TSMM()");
+			LOG.warn("Native TSMM failed. Falling back to java version.");
 			Statistics.incrementNativeFailuresCounter();
 		}
 		if( k > 1 )
@@ -161,7 +212,7 @@ public class LibMatrixNative
 		if(NativeHelper.isNativeLibraryLoaded() && !input.isInSparseFormat() && !filter.isInSparseFormat()) {
 			setNumThreads(params);
 			long start = DMLScript.STATISTICS ? System.nanoTime() : 0;
-			int nnz = 0;
+			long nnz;
 			if(params.bias == null) {
 				nnz = NativeHelper.conv2dDense(input.getDenseBlockValues(), filter.getDenseBlockValues(),
 						outputBlock.getDenseBlockValues(), params.N, params.C, params.H, params.W, 
@@ -237,7 +288,7 @@ public class LibMatrixNative
 		if(NativeHelper.isNativeLibraryLoaded() && !dout.isInSparseFormat() && !input.isInSparseFormat()) {
 			setNumThreads(params);
 			long start = DMLScript.STATISTICS ? System.nanoTime() : 0;
-			int nnz = NativeHelper.conv2dBackwardFilterDense(input.getDenseBlockValues(), dout.getDenseBlockValues(),
+			long nnz = NativeHelper.conv2dBackwardFilterDense(input.getDenseBlockValues(), dout.getDenseBlockValues(),
 					outputBlock.getDenseBlockValues(), params.N, params.C, params.H, params.W, 
 					params.K, params.R, params.S, params.stride_h, params.stride_w, params.pad_h, params.pad_w, 
 					params.P, params.Q, params.numThreads);
@@ -273,7 +324,7 @@ public class LibMatrixNative
 		if(NativeHelper.isNativeLibraryLoaded() && !dout.isInSparseFormat() && !filter.isInSparseFormat()) {
 			setNumThreads(params);
 			long start = DMLScript.STATISTICS ? System.nanoTime() : 0;
-			int nnz = NativeHelper.conv2dBackwardDataDense(filter.getDenseBlockValues(), dout.getDenseBlockValues(),
+			long nnz = NativeHelper.conv2dBackwardDataDense(filter.getDenseBlockValues(), dout.getDenseBlockValues(),
 					outputBlock.getDenseBlockValues(), params.N, params.C, params.H, params.W, 
 					params.K, params.R, params.S, params.stride_h, params.stride_w, params.pad_h, params.pad_w, 
 					params.P, params.Q, params.numThreads);
@@ -295,7 +346,7 @@ public class LibMatrixNative
 		LibMatrixDNN.conv2dBackwardData(filter, dout, outputBlock, params);
 	}
 	
-	private static boolean isSinglePrecision() {
+	public static boolean isSinglePrecision() {
 		return ConfigurationManager.getDMLConfig()
 			.getTextValue(DMLConfig.FLOATING_POINT_PRECISION).equals("single");
 	}

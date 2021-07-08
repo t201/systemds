@@ -20,7 +20,7 @@
 package org.apache.sysds.lops;
 
  
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.ValueType;
@@ -35,7 +35,10 @@ public class MapMultChain extends Lop
 		XtXv,  //(t(X) %*% (X %*% v))
 		XtwXv, //(t(X) %*% (w * (X %*% v)))
 		XtXvy, //(t(X) %*% ((X %*% v) - y))
-		NONE,
+		NONE;
+		public boolean isWeighted() {
+			return this == XtwXv || this == ChainType.XtXvy;
+		}
 	}
 	
 	private ChainType _chainType = null;

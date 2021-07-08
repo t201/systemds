@@ -23,7 +23,7 @@ import java.util.HashMap;
 
 import org.junit.Test;
 import org.apache.sysds.common.Types.ExecMode;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
@@ -106,8 +106,8 @@ public class RewriteComplexMapMultChainTest extends AutomatedTestBase
 			runRScript(true);
 			
 			//compare matrices
-			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("HV");
-			HashMap<CellIndex, Double> rfile  = readRMatrixFromFS("HV");
+			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("HV");
+			HashMap<CellIndex, Double> rfile  = readRMatrixFromExpectedDir("HV");
 			TestUtils.compareMatrices(dmlfile, rfile, eps, "DML", "R");
 			
 			//check expected number of compiled and executed Spark jobs

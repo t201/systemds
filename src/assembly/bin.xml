@@ -38,8 +38,10 @@
 			<excludes>
 				<exclude>algorithms/obsolete/*</exclude>
 				<exclude>algorithms/obsolete</exclude>
-				<exclude>perftest/*</exclude>
+				<exclude>perftest/**/*</exclude>
 				<exclude>perftest</exclude>
+				<exclude>perftestDeprecated/*</exclude>
+				<exclude>perftestDeprecated</exclude>
 				<exclude>staging/**/*</exclude>
 				<exclude>staging</exclude>
 			</excludes>
@@ -57,9 +59,9 @@
 		<fileSet>
 			<directory>${basedir}/bin</directory>
 			<includes>
-				<include>*.sh</include>
+				<include>systemds</include>
 			</includes>
-			<outputDirectory>.</outputDirectory>
+      <outputDirectory>bin</outputDirectory>
 			<fileMode>0755</fileMode>
 		</fileSet>
 
@@ -98,12 +100,14 @@
 				<include>*:hadoop-yarn*</include>
 				<include>*:jackson-core-asl*</include>
 				<include>*:jackson-mapper-asl*</include>
+				<include>*:janino*</include>
 				<include>*:log4j*</include>
+				<include>*:netty*</include>
 				<include>*:protobuf-java*</include>
+				<include>*:py4j*</include>
 				<include>*:slf4j-api*</include>
 				<include>*:slf4j-log4j*</include>
-				<include>*:netty*</include>
-				<include>*:py4j*</include>
+				<include>*:spark-core*</include>
 			</includes>
 			<outputDirectory>./lib</outputDirectory>
 			<scope>compile</scope>
@@ -114,6 +118,10 @@
 		<file>
 			<source>target/${artifactId}-${project.version}-extra.jar</source>
 			<outputDirectory>./lib/</outputDirectory>
+		</file>
+		<file>
+			<source>target/${artifactId}-${project.version}.jar</source>
+			<outputDirectory>.</outputDirectory>
 		</file>
 		<file>
 			<source>${basedir}/conf/log4j.properties.template</source>

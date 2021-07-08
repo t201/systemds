@@ -28,10 +28,13 @@ import org.apache.sysds.common.Types.FileFormat;
 import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.runtime.controlprogram.context.SparkExecutionContext;
+import org.apache.sysds.runtime.controlprogram.federated.FederationMap;
 import org.apache.sysds.runtime.data.TensorBlock;
 import org.apache.sysds.runtime.data.TensorIndexes;
 import org.apache.sysds.runtime.instructions.spark.data.RDDObject;
 import org.apache.sysds.runtime.io.FileFormatProperties;
+import org.apache.sysds.runtime.lineage.LineageItem;
+import org.apache.sysds.runtime.lineage.LineageRecomputeUtils;
 import org.apache.sysds.runtime.meta.DataCharacteristics;
 import org.apache.sysds.runtime.meta.MetaData;
 import org.apache.sysds.runtime.meta.MetaDataFormat;
@@ -141,6 +144,13 @@ public class TensorObject extends CacheableData<TensorBlock> {
 		// TODO read from RDD
 		return SparkExecutionContext.toTensorBlock((JavaPairRDD<TensorIndexes, TensorBlock>) rdd.getRDD(), tc);
 	}
+	
+	@Override
+	protected TensorBlock readBlobFromFederated(FederationMap fedMap, long[] dims)
+		throws IOException
+	{
+		throw new DMLRuntimeException("Unsupported federated tensors");
+	}
 
 	@Override
 	protected void writeBlobToHDFS(String fname, String ofmt, int rep, FileFormatProperties fprop)
@@ -181,5 +191,12 @@ public class TensorObject extends CacheableData<TensorBlock> {
 	protected void writeBlobFromRDDtoHDFS(RDDObject rdd, String fname, String ofmt)
 			throws DMLRuntimeException {
 		//TODO rdd write
+	}
+	
+	@Override
+	protected TensorBlock reconstructByLineage(LineageItem li) throws IOException {
+		return ((TensorObject) LineageRecomputeUtils
+			.parseNComputeLineageTrace(li.getData(), null))
+			.acquireReadAndRelease();
 	}
 }

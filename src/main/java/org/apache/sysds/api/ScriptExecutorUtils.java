@@ -34,6 +34,8 @@ import org.apache.sysds.runtime.instructions.cp.Data;
 import org.apache.sysds.runtime.instructions.gpu.context.GPUContext;
 import org.apache.sysds.runtime.instructions.gpu.context.GPUContextPool;
 import org.apache.sysds.runtime.instructions.gpu.context.GPUObject;
+import org.apache.sysds.runtime.lineage.LineageEstimatorStatistics;
+import org.apache.sysds.runtime.lineage.LineageGPUCacheEviction;
 import org.apache.sysds.utils.Statistics;
 
 public class ScriptExecutorUtils {
@@ -72,8 +74,6 @@ public class ScriptExecutorUtils {
 	 *            output variables that were registered as part of MLContext
 	 */
 	public static void executeRuntimeProgram(Program rtprog, ExecutionContext ec, DMLConfig dmlconf, int statisticsMaxHeavyHitters, Set<String> outputVariables) {
-		boolean exceptionThrown = false;
-
 		Statistics.startRunTimer();
 		try {
 			// run execute (w/ exception handling to ensure proper shutdown)
@@ -88,7 +88,6 @@ public class ScriptExecutorUtils {
 			}
 			rtprog.execute(ec);
 		} catch (Throwable e) {
-			exceptionThrown = true;
 			throw e;
 		} finally { // ensure cleanup/shutdown
 			if (DMLScript.USE_ACCELERATOR && !ec.getGPUContexts().isEmpty()) {
@@ -115,15 +114,19 @@ public class ScriptExecutorUtils {
 					gCtx.clearTemporaryMemory();
 				}
 				GPUContextPool.freeAllGPUContexts();
+				if (LineageGPUCacheEviction.gpuEvictionThread != null)
+					LineageGPUCacheEviction.gpuEvictionThread.shutdown();
 			}
 			if( ConfigurationManager.isCodegenEnabled() )
 				SpoofCompiler.cleanupCodeGenerator();
 			
 			// display statistics (incl caching stats if enabled)
 			Statistics.stopRunTimer();
-			(exceptionThrown ? System.err : System.out)
-				.println(Statistics.display(statisticsMaxHeavyHitters > 0 ?
+			System.out.println(Statistics.display(statisticsMaxHeavyHitters > 0 ?
 					statisticsMaxHeavyHitters : DMLScript.STATISTICS_COUNT));
+			
+			if (DMLScript.LINEAGE_ESTIMATE)
+				System.out.println(LineageEstimatorStatistics.displayLineageEstimates());
 		}
 	}
 

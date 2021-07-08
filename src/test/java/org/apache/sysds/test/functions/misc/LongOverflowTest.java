@@ -19,11 +19,11 @@
 
 package org.apache.sysds.test.functions.misc;
 
-import org.junit.Test;
-import org.apache.sysds.api.DMLException;
+import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
 import org.apache.sysds.test.TestUtils;
+import org.junit.Test;
 
 /**
  *   
@@ -97,20 +97,19 @@ public class LongOverflowTest extends AutomatedTestBase
 		try
 		{		
 			getAndLoadTestConfiguration(TEST_NAME);
-		    
+		
 			//generate input data;
 			long input1 = (TEST_NAME.equals(TEST_NAME3)? val5 : val1);
 			long input2 = (TEST_NAME.equals(TEST_NAME3)? val4 : error ? val3 : val2 );
 			
-		    String HOME = SCRIPT_DIR + TEST_DIR;
+		String HOME = SCRIPT_DIR + TEST_DIR;
 			fullDMLScriptName = HOME + TEST_NAME + ".dml";
 			programArgs = new String[]{"-args", Long.toString(input1), Long.toString(input2) };
 			
 			//run tests
-	        runTest(true, error, DMLException.class, -1);
+			runTest(true, error, DMLRuntimeException.class, -1);
 		}
-		catch(Exception ex)
-		{
+		catch(Exception ex) {
 			throw new RuntimeException(ex);
 		}
 	}

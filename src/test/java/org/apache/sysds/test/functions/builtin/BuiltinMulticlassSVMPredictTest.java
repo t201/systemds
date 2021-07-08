@@ -19,13 +19,11 @@
 
 package org.apache.sysds.test.functions.builtin;
 
-import static org.junit.Assert.fail;
-
 import java.util.HashMap;
 
 import org.apache.sysds.common.Types.ExecMode;
-import org.apache.sysds.lops.LopProperties;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
+import org.apache.sysds.runtime.DMLScriptException;
 import org.apache.sysds.runtime.matrix.data.MatrixValue;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
@@ -60,7 +58,7 @@ public class BuiltinMulticlassSVMPredictTest extends AutomatedTestBase {
 		res_YRaw.put(new CellIndex(1, 1), 0.4);
 		res_YRaw.put(new CellIndex(2, 2), 0.2);
 
-		for(LopProperties.ExecType ex : new ExecType[] {LopProperties.ExecType.CP, LopProperties.ExecType.SPARK}) {
+		for(ExecType ex : new ExecType[] {ExecType.CP, ExecType.SPARK}) {
 			runMSVMPredict(x, w, res_YRaw, res_Y, ex);
 		}
 	}
@@ -77,7 +75,7 @@ public class BuiltinMulticlassSVMPredictTest extends AutomatedTestBase {
 		res_YRaw.put(new CellIndex(1, 1), 0.42);
 		res_YRaw.put(new CellIndex(1, 2), 0.3);
 
-		for(LopProperties.ExecType ex : new ExecType[] {LopProperties.ExecType.CP, LopProperties.ExecType.SPARK}) {
+		for(ExecType ex : new ExecType[] {ExecType.CP, ExecType.SPARK}) {
 			runMSVMPredict(x, w, res_YRaw, res_Y, ex);
 		}
 	}
@@ -95,7 +93,7 @@ public class BuiltinMulticlassSVMPredictTest extends AutomatedTestBase {
 		res_YRaw.put(new CellIndex(1, 1), 1.42);
 		res_YRaw.put(new CellIndex(1, 2), 0.8);
 
-		for(LopProperties.ExecType ex : new ExecType[] {LopProperties.ExecType.CP, LopProperties.ExecType.SPARK}) {
+		for(ExecType ex : new ExecType[] {ExecType.CP, ExecType.SPARK}) {
 			runMSVMPredict(x, w, res_YRaw, res_Y, ex);
 		}
 	}
@@ -116,8 +114,8 @@ public class BuiltinMulticlassSVMPredictTest extends AutomatedTestBase {
 			writeInputMatrixWithMTD("W", w, false);
 			runTest(true, false, null, -1);
 
-			HashMap<MatrixValue.CellIndex, Double> YRaw_res = readDMLMatrixFromHDFS("YRaw");
-			HashMap<MatrixValue.CellIndex, Double> Y_res = readDMLMatrixFromHDFS("Y");
+			HashMap<MatrixValue.CellIndex, Double> YRaw_res = readDMLMatrixFromOutputDir("YRaw");
+			HashMap<MatrixValue.CellIndex, Double> Y_res = readDMLMatrixFromOutputDir("Y");
 
 			TestUtils.compareMatrices(YRaw_res, YRaw, eps, "DML_Result", "Expected");
 			TestUtils.compareMatrices(Y_res, Y, eps, "DML_Result", "Expected");
@@ -152,7 +150,7 @@ public class BuiltinMulticlassSVMPredictTest extends AutomatedTestBase {
 	}
 
 	private void runMSVMPredictionExceptionTest(double[][] x, double[][] w) {
-		ExecMode platformOld = setExecMode(LopProperties.ExecType.CP);
+		ExecMode platformOld = setExecMode(ExecType.CP);
 
 		try {
 			loadTestConfiguration(getTestConfiguration(TEST_NAME));
@@ -164,20 +162,8 @@ public class BuiltinMulticlassSVMPredictTest extends AutomatedTestBase {
 			writeInputMatrixWithMTD("X", x, false);
 			writeInputMatrixWithMTD("W", w, false);
 
-			// TODO make stop throw exception instead
-			// https://issues.apache.org/jira/projects/SYSTEMML/issues/SYSTEMML-2540
-			// runTest(true, true, DMLScriptException.class, -1);
+			runTest(DMLScriptException.class);
 
-			// Verify that the outputfile is not existing!
-			runTest(true, false, null, -1);
-
-			try {
-				readDMLMatrixFromHDFS("YRaw");
-				fail("File should not have been written");
-			}
-			catch(AssertionError e) {
-				// exception expected
-			}
 		}
 		finally {
 			rtplatform = platformOld;

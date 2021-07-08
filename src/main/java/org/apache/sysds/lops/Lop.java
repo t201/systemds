@@ -21,13 +21,12 @@ package org.apache.sysds.lops;
 
 import java.util.ArrayList;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.sysds.lops.LopProperties.ExecType;
-import org.apache.sysds.lops.compile.Dag;
-import org.apache.sysds.runtime.privacy.PrivacyConstraint;
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.ValueType;
+import org.apache.sysds.common.Types.ExecType;
+import org.apache.sysds.lops.compile.Dag;
+import org.apache.sysds.runtime.instructions.fed.FEDInstruction.FederatedOutput;
+import org.apache.sysds.runtime.privacy.PrivacyConstraint;
 
 
 /**
@@ -76,9 +75,6 @@ public abstract class Lop
 		DONE, NOTVISITED
 	}
 	
-
-	protected static final Log LOG =  LogFactory.getLog(Lop.class.getName());
-	
 	public static final String FILE_SEPARATOR = "/";
 	public static final String PROCESS_PREFIX = "_p";
 	public static final String CP_ROOT_THREAD_ID = "_t0";
@@ -118,6 +114,13 @@ public abstract class Lop
 	 * Privacy Constraint
 	 */
 	protected PrivacyConstraint privacyConstraint;
+
+	/**
+	 * Boolean defining if the output of the operation should be federated.
+	 * If it is true, the output should be kept at federated sites.
+	 * If it is false, the output should be retrieved by the coordinator.
+	 */
+	protected FederatedOutput _fedOutput = null;
 	
 	/**
 	 * refers to #lops whose input is equal to the output produced by this lop.
@@ -291,6 +294,10 @@ public abstract class Lop
 	public PrivacyConstraint getPrivacyConstraint(){
 		return privacyConstraint;
 	}
+
+	public void setFederatedOutput(FederatedOutput fedOutput){
+		_fedOutput = fedOutput;
+	}
 	
 	public void setConsumerCount(int cc) {
 		consumerCount = cc;
@@ -347,12 +354,20 @@ public abstract class Lop
 	}
 
 	/**
-	 * Method to get the execution type (CP, CP_FILE, MR, SPARK, GPU, INVALID) of LOP
+	 * Method to get the execution type (CP, CP_FILE, MR, SPARK, GPU, FED, INVALID) of LOP
 	 * 
 	 * @return execution type
 	 */
  	public ExecType getExecType() {
 		return lps.getExecType();
+	}
+
+	/**
+	 * Set the execution type of LOP.
+	 * @param newExecType new execution type
+	 */
+	public void setExecType(ExecType newExecType){
+ 		lps.setExecType(newExecType);
 	}
 	
 	public boolean getProducesIntermediateOutput() {

@@ -26,6 +26,9 @@ on:
     branches:
       - master
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
     branches:
       - master
 
@@ -35,15 +38,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        tests: [A,B,C,G,H,I,L,M,N,O,P,S,U,W]
         os: [ubuntu-latest]
     name:  Ap Test ${{ matrix.tests }} 
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v2
 
-    - name: Run all tests starting with "${{ matrix.tests }}"
+    - name: Cache Maven Dependencies
+      uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository
+        key: ${{ runner.os }}-maven-test-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ runner.os }}-maven-test-
+
+    - name: Run all Application Tests
       uses: ./.github/action/
       id: test
       with:
-        test-to-run: org.apache.sysds.test.applications.${{ matrix.tests }}**
+        test-to-run: org.apache.sysds.test.applications.**

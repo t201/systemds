@@ -19,113 +19,165 @@
 
 package org.apache.sysds.runtime.controlprogram.federated;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.util.Arrays;
+
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
-import org.apache.commons.lang.exception.ExceptionUtils;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.log4j.Logger;
+import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types;
+import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.FileFormat;
 import org.apache.sysds.conf.ConfigurationManager;
-import org.apache.sysds.hops.OptimizerUtils;
 import org.apache.sysds.parser.DataExpression;
 import org.apache.sysds.runtime.DMLRuntimeException;
+import org.apache.sysds.runtime.controlprogram.BasicProgramBlock;
+import org.apache.sysds.runtime.controlprogram.caching.CacheBlock;
 import org.apache.sysds.runtime.controlprogram.caching.CacheableData;
 import org.apache.sysds.runtime.controlprogram.caching.FrameObject;
 import org.apache.sysds.runtime.controlprogram.caching.MatrixObject;
-import org.apache.sysds.runtime.controlprogram.caching.TensorObject;
-import org.apache.sysds.runtime.controlprogram.parfor.util.IDSequence;
-import org.apache.sysds.runtime.functionobjects.Multiply;
-import org.apache.sysds.runtime.functionobjects.Plus;
+import org.apache.sysds.runtime.controlprogram.context.ExecutionContext;
+import org.apache.sysds.runtime.controlprogram.federated.FederatedRequest.RequestType;
+import org.apache.sysds.runtime.controlprogram.federated.FederatedResponse.ResponseType;
+import org.apache.sysds.runtime.instructions.Instruction;
+import org.apache.sysds.runtime.instructions.InstructionParser;
 import org.apache.sysds.runtime.instructions.cp.Data;
 import org.apache.sysds.runtime.instructions.cp.ListObject;
+import org.apache.sysds.runtime.instructions.cp.ScalarObject;
+import org.apache.sysds.runtime.io.FileFormatPropertiesCSV;
 import org.apache.sysds.runtime.io.IOUtilFunctions;
-import org.apache.sysds.runtime.matrix.data.LibMatrixAgg;
-import org.apache.sysds.runtime.matrix.data.MatrixBlock;
-import org.apache.sysds.runtime.matrix.operators.AggregateBinaryOperator;
-import org.apache.sysds.runtime.matrix.operators.AggregateOperator;
-import org.apache.sysds.runtime.matrix.operators.AggregateUnaryOperator;
-import org.apache.sysds.runtime.matrix.operators.ScalarOperator;
+import org.apache.sysds.runtime.lineage.LineageCache;
+import org.apache.sysds.runtime.lineage.LineageCacheConfig;
+import org.apache.sysds.runtime.lineage.LineageCacheConfig.ReuseCacheType;
+import org.apache.sysds.runtime.lineage.LineageItem;
+import org.apache.sysds.runtime.lineage.LineageItemUtils;
 import org.apache.sysds.runtime.meta.MatrixCharacteristics;
+import org.apache.sysds.runtime.meta.MetaDataAll;
 import org.apache.sysds.runtime.meta.MetaDataFormat;
-import org.apache.sysds.utils.JSONHelper;
-import org.apache.wink.json4j.JSONObject;
-
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.util.Arrays;
-import java.util.Map;
+import org.apache.sysds.runtime.privacy.DMLPrivacyException;
+import org.apache.sysds.runtime.privacy.PrivacyMonitor;
+import org.apache.sysds.utils.Statistics;
 
 public class FederatedWorkerHandler extends ChannelInboundHandlerAdapter {
 	protected static Logger log = Logger.getLogger(FederatedWorkerHandler.class);
 
-	private final IDSequence _seq;
-	private Map<Long, Data> _vars;
+	private final ExecutionContextMap _ecm;
 
-	public FederatedWorkerHandler(IDSequence seq, Map<Long, Data> _vars2) {
-		_seq = seq;
-		_vars = _vars2;
+	public FederatedWorkerHandler(ExecutionContextMap ecm) {
+		// Note: federated worker handler created for every command;
+		// and concurrent parfor threads at coordinator need separate
+		// execution contexts at the federated sites too
+		_ecm = ecm;
 	}
 
 	@Override
 	public void channelRead(ChannelHandlerContext ctx, Object msg) {
-		log.debug("Received: " + msg.getClass().getSimpleName());
-		FederatedRequest request;
-		if (msg instanceof FederatedRequest)
-			request = (FederatedRequest) msg;
-		else
-			throw new DMLRuntimeException("FederatedWorkerHandler: Received object no instance of `FederatedRequest`.");
-		FederatedRequest.FedMethod method = request.getMethod();
-		log.debug("Received command: " + method.name());
-
-		synchronized (_seq) {
-			FederatedResponse response = constructResponse(request);
-			if (!response.isSuccessful())
-				log.error("Method " + method + " failed: " + response.getErrorMessage());
-			ctx.writeAndFlush(response).addListener(new CloseListener());
-		}
+		ctx.writeAndFlush(createResponse(msg)).addListener(new CloseListener());
 	}
 
-	private FederatedResponse constructResponse(FederatedRequest request) {
-		FederatedRequest.FedMethod method = request.getMethod();
-		try {
-			switch (method) {
-				case READ_MATRIX:
-					return readData(request, Types.DataType.MATRIX);
-				case READ_FRAME:
-					return readData(request, Types.DataType.FRAME);
-				case MATVECMULT:
-					return executeMatVecMult(request);
-				case TRANSFER:
-					return getVariableData(request);
-				case AGGREGATE:
-					return executeAggregation(request);
-				case SCALAR:
-					return executeScalarOperation(request);
-				default:
-					String message = String.format("Method %s is not supported.", method);
-					return new FederatedResponse(FederatedResponse.Type.ERROR, message);
+	public FederatedResponse createResponse(Object msg) {
+		if(log.isDebugEnabled()) {
+			log.debug("Received: " + msg.getClass().getSimpleName());
+		}
+		if(!(msg instanceof FederatedRequest[]))
+			throw new DMLRuntimeException(
+				"FederatedWorkerHandler: Received object no instance of 'FederatedRequest[]'.");
+		FederatedRequest[] requests = (FederatedRequest[]) msg;
+		FederatedResponse response = null; // last response
+
+		for(int i = 0; i < requests.length; i++) {
+			FederatedRequest request = requests[i];
+			if(log.isDebugEnabled()) {
+				log.debug("Executing command " + (i + 1) + "/" + requests.length + ": " + request.getType().name());
+				if(log.isTraceEnabled()) {
+					log.trace("full command: " + request.toString());
+				}
+			}
+			PrivacyMonitor.setCheckPrivacy(request.checkPrivacy());
+			PrivacyMonitor.clearCheckedConstraints();
+
+			// execute command and handle privacy constraints
+			FederatedResponse tmp = executeCommand(request);
+			conditionalAddCheckedConstraints(request, tmp);
+
+			// select the response for the entire batch of requests
+			if(!tmp.isSuccessful()) {
+				log.error("Command " + request.getType() + " failed: " + tmp.getErrorMessage() + "full command: \n"
+					+ request.toString());
+				response = (response == null || response.isSuccessful()) ? tmp : response; // return first error
+			}
+			else if(request.getType() == RequestType.GET_VAR) {
+				if(response != null && response.isSuccessful())
+					log.error("Multiple GET_VAR are not supported in single batch of requests.");
+				response = tmp; // return last get result
+			}
+			else if(response == null && i == requests.length - 1) {
+				response = tmp; // return last
+			}
+
+			if(DMLScript.STATISTICS && request.getType() == RequestType.CLEAR && Statistics.allowWorkerStatistics) {
+				System.out.println("Federated Worker " + Statistics.display());
+				Statistics.reset();
 			}
 		}
-		catch (Exception exception) {
-			return new FederatedResponse(FederatedResponse.Type.ERROR, ExceptionUtils.getFullStackTrace(exception));
+		return response;
+	}
+
+	private static void conditionalAddCheckedConstraints(FederatedRequest request, FederatedResponse response) {
+		if(request.checkPrivacy())
+			response.setCheckedConstraints(PrivacyMonitor.getCheckedConstraints());
+	}
+
+	private FederatedResponse executeCommand(FederatedRequest request) {
+		RequestType method = request.getType();
+		try {
+			switch(method) {
+				case READ_VAR:
+					return readData(request); // matrix/frame
+				case PUT_VAR:
+					return putVariable(request);
+				case GET_VAR:
+					return getVariable(request);
+				case EXEC_INST:
+					return execInstruction(request);
+				case EXEC_UDF:
+					return execUDF(request);
+				case CLEAR:
+					return execClear();
+				default:
+					String message = String.format("Method %s is not supported.", method);
+					return new FederatedResponse(ResponseType.ERROR, new FederatedWorkerHandlerException(message));
+			}
+		}
+		catch(DMLPrivacyException | FederatedWorkerHandlerException ex) {
+			return new FederatedResponse(ResponseType.ERROR, ex);
+		}
+		catch (Exception ex) {
+			String msg = "Exception of type " + ex.getClass() + " thrown when processing request";
+			log.error(msg, ex);
+			return new FederatedResponse(ResponseType.ERROR,
+				new FederatedWorkerHandlerException(msg));
 		}
 	}
 
-	private FederatedResponse readData(FederatedRequest request, Types.DataType dataType) {
-		checkNumParams(request.getNumParams(), 1);
+	private FederatedResponse readData(FederatedRequest request) {
+		checkNumParams(request.getNumParams(), 2);
 		String filename = (String) request.getParam(0);
-		return readData(filename, dataType);
+		DataType dt = DataType.valueOf((String) request.getParam(1));
+		return readData(filename, dt, request.getID(), request.getTID());
 	}
 
-	private FederatedResponse readData(String filename, Types.DataType dataType) {
+	private FederatedResponse readData(String filename, Types.DataType dataType, long id, long tid) {
 		MatrixCharacteristics mc = new MatrixCharacteristics();
 		mc.setBlocksize(ConfigurationManager.getBlocksize());
 		CacheableData<?> cd;
-		switch (dataType) {
+		switch(dataType) {
 			case MATRIX:
 				cd = new MatrixObject(Types.ValueType.FP64, filename);
 				break;
@@ -133,173 +185,209 @@ public class FederatedWorkerHandler extends ChannelInboundHandlerAdapter {
 				cd = new FrameObject(filename);
 				break;
 			default:
-				// should NEVER happen (if we keep request codes in sync with actual behaviour)
-				return new FederatedResponse(FederatedResponse.Type.ERROR, "Could not recognize datatype");
+				// should NEVER happen (if we keep request codes in sync with actual behavior)
+				return new FederatedResponse(ResponseType.ERROR,
+					new FederatedWorkerHandlerException("Could not recognize datatype"));
 		}
-		
-		// read metadata
+
 		FileFormat fmt = null;
+		boolean header = false;
+		String delim = null;
+		FileSystem fs = null;
+		MetaDataAll mtd;
 		try {
 			String mtdname = DataExpression.getMTDFileName(filename);
 			Path path = new Path(mtdname);
-			try (FileSystem fs = IOUtilFunctions.getFileSystem(mtdname)) {
-				try (BufferedReader br = new BufferedReader(new InputStreamReader(fs.open(path)))) {
-					JSONObject mtd = JSONHelper.parse(br);
-					if (mtd == null)
-						return new FederatedResponse(FederatedResponse.Type.ERROR, "Could not parse metadata file");
-					mc.setRows(mtd.getLong(DataExpression.READROWPARAM));
-					mc.setCols(mtd.getLong(DataExpression.READCOLPARAM));
-					fmt = FileFormat.safeValueOf(mtd.getString(DataExpression.FORMAT_TYPE));
-				}
+			fs = IOUtilFunctions.getFileSystem(mtdname);
+			try(BufferedReader br = new BufferedReader(new InputStreamReader(fs.open(path)))) {
+				mtd = new MetaDataAll(br);
+				if(!mtd.mtdExists())
+					return new FederatedResponse(ResponseType.ERROR,
+						new FederatedWorkerHandlerException("Could not parse metadata file"));
+				mc.setRows(mtd.getDim1());
+				mc.setCols(mtd.getDim2());
+				mc.setNonZeros(mtd.getNnz());
+				header = mtd.getHasHeader();
+				cd = mtd.parseAndSetPrivacyConstraint(cd);
+				fmt = mtd.getFileFormat();
+				delim = mtd.getDelim();
 			}
 		}
+		catch (DMLPrivacyException | FederatedWorkerHandlerException ex){
+			throw ex;
+		}
 		catch (Exception ex) {
-			throw new DMLRuntimeException(ex);
+			String msg = "Exception in reading metadata of: " + filename;
+			log.error(msg, ex);
+			throw new DMLRuntimeException(msg);
 		}
+		finally {
+			IOUtilFunctions.closeSilently(fs);
+		}
+
+		// put meta data object in symbol table, read on first operation
 		cd.setMetaData(new MetaDataFormat(mc, fmt));
-		cd.acquireRead();
-		cd.refreshMetaData();
-		cd.release();
+		if(fmt == FileFormat.CSV)
+			cd.setFileFormatProperties(new FileFormatPropertiesCSV(header, delim,
+				DataExpression.DEFAULT_DELIM_SPARSE));
+		cd.enableCleanup(false); // guard against deletion
+		_ecm.get(tid).setVariable(String.valueOf(id), cd);
 
-		long id = _seq.getNextID();
-		_vars.put(id, cd);
-		if (dataType == Types.DataType.FRAME) {
+		if (DMLScript.LINEAGE)
+			// create a literal type lineage item with the file name
+			_ecm.get(tid).getLineage().set(String.valueOf(id), new LineageItem(filename));
+
+		if(dataType == Types.DataType.FRAME) {
 			FrameObject frameObject = (FrameObject) cd;
-			return new FederatedResponse(FederatedResponse.Type.SUCCESS, new Object[] {id, frameObject.getSchema()});
+			frameObject.acquireRead();
+			frameObject.refreshMetaData(); // get block schema
+			frameObject.release();
+			return new FederatedResponse(ResponseType.SUCCESS, new Object[] {id, frameObject.getSchema(), mc});
 		}
-		return new FederatedResponse(FederatedResponse.Type.SUCCESS, id);
+		return new FederatedResponse(ResponseType.SUCCESS, new Object[] {id, mc});
 	}
 
-	private FederatedResponse executeMatVecMult(FederatedRequest request) {
-		checkNumParams(request.getNumParams(), 3);
-		MatrixBlock vector = (MatrixBlock) request.getParam(0);
-		boolean isMatVecMult = (Boolean) request.getParam(1);
-		long varID = (Long) request.getParam(2);
-
-		return executeMatVecMult(varID, vector, isMatVecMult);
-	}
-
-	private FederatedResponse executeMatVecMult(long varID, MatrixBlock vector, boolean isMatVecMult) {
-		MatrixObject matTo = (MatrixObject) _vars.get(varID);
-		MatrixBlock matBlock1 = matTo.acquireReadAndRelease();
-		// TODO other datatypes
-		AggregateBinaryOperator ab_op = new AggregateBinaryOperator(
-			Multiply.getMultiplyFnObject(), new AggregateOperator(0, Plus.getPlusFnObject()));
-		MatrixBlock result = isMatVecMult ?
-			matBlock1.aggregateBinaryOperations(matBlock1, vector, new MatrixBlock(), ab_op) :
-			vector.aggregateBinaryOperations(vector, matBlock1, new MatrixBlock(), ab_op);
-		return new FederatedResponse(FederatedResponse.Type.SUCCESS, result);
-	}
-
-	private FederatedResponse getVariableData(FederatedRequest request) {
+	private FederatedResponse putVariable(FederatedRequest request) {
 		checkNumParams(request.getNumParams(), 1);
-		long varID = (Long) request.getParam(0);
-		return getVariableData(varID);
+		String varname = String.valueOf(request.getID());
+		ExecutionContext ec = _ecm.get(request.getTID());
+		if(ec.containsVariable(varname)) {
+			return new FederatedResponse(ResponseType.ERROR, "Variable " + request.getID() + " already existing.");
+		}
+
+		// wrap transferred cache block into cacheable data
+		Data data;
+		if(request.getParam(0) instanceof CacheBlock)
+			data = ExecutionContext.createCacheableData((CacheBlock) request.getParam(0));
+		else if(request.getParam(0) instanceof ScalarObject)
+			data = (ScalarObject) request.getParam(0);
+		else if(request.getParam(0) instanceof ListObject)
+			data = (ListObject) request.getParam(0);
+		else
+			throw new DMLRuntimeException(
+				"FederatedWorkerHandler: Unsupported object type, has to be of type CacheBlock or ScalarObject");
+
+		// set variable and construct empty response
+		ec.setVariable(varname, data);
+		if (DMLScript.LINEAGE)
+			ec.getLineage().set(varname, new LineageItem(String.valueOf(request.getChecksum(0))));
+
+		return new FederatedResponse(ResponseType.SUCCESS_EMPTY);
 	}
 
-	private FederatedResponse getVariableData(long varID) {
-		Data dataObject = _vars.get(varID);
-		switch (dataObject.getDataType()) {
+	private FederatedResponse getVariable(FederatedRequest request) {
+		checkNumParams(request.getNumParams(), 0);
+		ExecutionContext ec = _ecm.get(request.getTID());
+		if(!ec.containsVariable(String.valueOf(request.getID()))) {
+			return new FederatedResponse(ResponseType.ERROR,
+				"Variable " + request.getID() + " does not exist at federated worker.");
+		}
+		// get variable and construct response
+		Data dataObject = ec.getVariable(String.valueOf(request.getID()));
+		dataObject = PrivacyMonitor.handlePrivacy(dataObject);
+		switch(dataObject.getDataType()) {
 			case TENSOR:
-				return new FederatedResponse(FederatedResponse.Type.SUCCESS,
-					((TensorObject) dataObject).acquireReadAndRelease());
 			case MATRIX:
-				return new FederatedResponse(FederatedResponse.Type.SUCCESS,
-					((MatrixObject) dataObject).acquireReadAndRelease());
 			case FRAME:
-				return new FederatedResponse(FederatedResponse.Type.SUCCESS,
-						((FrameObject) dataObject).acquireReadAndRelease());
+				return new FederatedResponse(ResponseType.SUCCESS,
+					((CacheableData<?>) dataObject).acquireReadAndRelease());
 			case LIST:
-				return new FederatedResponse(FederatedResponse.Type.SUCCESS, ((ListObject) dataObject).getData());
-			// TODO rest of the possible datatypes
+				return new FederatedResponse(ResponseType.SUCCESS, ((ListObject) dataObject).getData());
+			case SCALAR:
+				return new FederatedResponse(ResponseType.SUCCESS, dataObject);
 			default:
-				return new FederatedResponse(FederatedResponse.Type.ERROR,
-					"FederatedWorkerHandler: Not possible to send datatype " + dataObject.getDataType().name());
+				return new FederatedResponse(ResponseType.ERROR, new FederatedWorkerHandlerException(
+					"Unsupported return datatype " + dataObject.getDataType().name()));
 		}
 	}
 
-	private FederatedResponse executeAggregation(FederatedRequest request) {
-		checkNumParams(request.getNumParams(), 2);
-		AggregateUnaryOperator operator = (AggregateUnaryOperator) request.getParam(0);
-		long varID = (Long) request.getParam(1);
-		return executeAggregation(varID, operator);
-	}
+	private FederatedResponse execInstruction(FederatedRequest request) {
+		ExecutionContext ec = _ecm.get(request.getTID());
+		BasicProgramBlock pb = new BasicProgramBlock(null);
+		pb.getInstructions().clear();
+		Instruction receivedInstruction = InstructionParser.parseSingleInstruction((String) request.getParam(0));
+		pb.getInstructions().add(receivedInstruction);
 
-	private FederatedResponse executeAggregation(long varID, AggregateUnaryOperator operator) {
-		Data dataObject = _vars.get(varID);
-		if (dataObject.getDataType() != Types.DataType.MATRIX) {
-			return new FederatedResponse(FederatedResponse.Type.ERROR,
-				"FederatedWorkerHandler: Aggregation only supported for matrices, not for "
-					+ dataObject.getDataType().name());
-		}
-		MatrixObject matrixObject = (MatrixObject) dataObject;
-		MatrixBlock matrixBlock = matrixObject.acquireRead();
-		// create matrix for calculation with correction
-		MatrixCharacteristics mc = new MatrixCharacteristics();
-		// find out the characteristics after aggregation
-		operator.indexFn.computeDimension(matrixObject.getDataCharacteristics(), mc);
-		// make outBlock right size
-		int outNumRows = (int) mc.getRows();
-		int outNumCols = (int) mc.getCols();
-		if (operator.aggOp.existsCorrection()) {
-			// add rows for correction
-			int numMissing = operator.aggOp.correction.getNumRemovedRowsColumns();
-			if (operator.aggOp.correction.isRows())
-				outNumRows += numMissing;
-			else
-				outNumCols += numMissing;
-		}
-		MatrixBlock ret = new MatrixBlock(outNumRows, outNumCols, operator.aggOp.initialValue);
+		if (DMLScript.LINEAGE)
+			// Compiler assisted optimizations are not applicable for Fed workers.
+			// e.g. isMarkedForCaching fails as output operands are saved in the 
+			// symbol table only after the instruction execution finishes. 
+			// NOTE: In shared JVM, this will disable compiler assistance even for the coordinator 
+			LineageCacheConfig.setCompAssRW(false);
+
 		try {
-			LibMatrixAgg.aggregateUnaryMatrix(matrixBlock, ret, operator);
+			pb.execute(ec); // execute single instruction
 		}
-		catch (Exception e) {
-			return new FederatedResponse(FederatedResponse.Type.ERROR, "FederatedWorkerHandler: " + e);
+		catch(DMLPrivacyException | FederatedWorkerHandlerException ex){
+			throw ex;
 		}
-		// result block without correction
-		ret.dropLastRowsOrColumns(operator.aggOp.correction);
-		return new FederatedResponse(FederatedResponse.Type.SUCCESS, ret);
+		catch(Exception ex) {
+			String msg = "Exception of type " + ex.getClass() + " thrown when processing EXEC_INST request";
+			log.error(msg, ex);
+			return new FederatedResponse(ResponseType.ERROR,
+				new FederatedWorkerHandlerException(msg));
+		}
+		return new FederatedResponse(ResponseType.SUCCESS_EMPTY);
 	}
 
-	private FederatedResponse executeScalarOperation(FederatedRequest request) {
-		checkNumParams(request.getNumParams(), 2);
-		ScalarOperator operator = (ScalarOperator) request.getParam(0);
-		long varID = (Long) request.getParam(1);
-		return executeScalarOperation(varID, operator);
-	}
+	private FederatedResponse execUDF(FederatedRequest request) {
+		checkNumParams(request.getNumParams(), 1);
+		ExecutionContext ec = _ecm.get(request.getTID());
 
-	private FederatedResponse executeScalarOperation(long varID, ScalarOperator operator) {
-		Data dataObject = _vars.get(varID);
-		if (dataObject.getDataType() != Types.DataType.MATRIX) {
-			return new FederatedResponse(FederatedResponse.Type.ERROR,
-				"FederatedWorkerHandler: ScalarOperator dont support "
-					+ dataObject.getDataType().name());
+		// get function and input parameters
+		FederatedUDF udf = (FederatedUDF) request.getParam(0);
+		Data[] inputs = Arrays.stream(udf.getInputIDs()).mapToObj(id -> ec.getVariable(String.valueOf(id)))
+			.map(PrivacyMonitor::handlePrivacy).toArray(Data[]::new);
+		
+		// trace lineage
+		if (DMLScript.LINEAGE)
+			LineageItemUtils.traceFedUDF(ec, udf);
+		
+		// reuse or execute user-defined function
+		try {
+			// reuse UDF outputs if available in lineage cache
+			FederatedResponse reuse = LineageCache.reuse(udf, ec);
+			if (reuse.isSuccessful())
+				return reuse;
+
+			// else execute the UDF
+			long t0 = !ReuseCacheType.isNone() ? System.nanoTime() : 0;
+			FederatedResponse res = udf.execute(ec, inputs);
+			long t1 = !ReuseCacheType.isNone() ? System.nanoTime() : 0;
+			//cacheUDFOutputs(udf, inputs, t1-t0, ec);
+			LineageCache.putValue(udf, ec, t1-t0);
+			return res;
 		}
-
-		MatrixObject matrixObject = (MatrixObject) dataObject;
-		MatrixBlock inBlock = matrixObject.acquireRead();
-		MatrixBlock retBlock = inBlock.scalarOperations(operator, new MatrixBlock());
-		return new FederatedResponse(FederatedResponse.Type.SUCCESS, retBlock);
+		catch(DMLPrivacyException | FederatedWorkerHandlerException ex){
+			throw ex;
+		}
+		catch(Exception ex) {
+			String msg = "Exception of type " + ex.getClass() + " thrown when processing EXEC_UDF request";
+			log.error(msg, ex);
+			return new FederatedResponse(ResponseType.ERROR, new FederatedWorkerHandlerException(msg));
+		}
 	}
-
-	@SuppressWarnings("unused")
-	private FederatedResponse createMatrixObject(MatrixBlock result) {
-		MatrixObject resTo = new MatrixObject(Types.ValueType.FP64, OptimizerUtils.getUniqueTempFileName());
-		MetaDataFormat metadata = new MetaDataFormat(
-			new MatrixCharacteristics(result.getNumRows(), result.getNumColumns()), FileFormat.BINARY);
-		resTo.setMetaData(metadata);
-		resTo.acquireModify(result);
-		resTo.release();
-		long result_var = _seq.getNextID();
-		_vars.put(result_var, resTo);
-		return new FederatedResponse(FederatedResponse.Type.SUCCESS, result_var);
+	
+	private FederatedResponse execClear() {
+		try {
+			_ecm.clear();
+		}
+		catch(DMLPrivacyException | FederatedWorkerHandlerException ex){
+			throw ex;
+		}
+		catch(Exception ex) {
+			String msg = "Exception of type " + ex.getClass() + " thrown when processing CLEAR request";
+			log.error(msg, ex);
+			return new FederatedResponse(ResponseType.ERROR, new FederatedWorkerHandlerException(msg));
+		}
+		return new FederatedResponse(ResponseType.SUCCESS_EMPTY);
 	}
 
 	private static void checkNumParams(int actual, int... expected) {
-		if (Arrays.stream(expected).anyMatch(x -> x == actual))
+		if(Arrays.stream(expected).anyMatch(x -> x == actual))
 			return;
-		throw new DMLRuntimeException("FederatedWorkerHandler: Received wrong amount of params:" + " expected="
-			+ Arrays.toString(expected) + ", actual=" + actual);
+		throw new DMLRuntimeException("FederatedWorkerHandler: Received wrong amount of params:" 
+			+ " expected=" + Arrays.toString(expected) + ", actual=" + actual);
 	}
 
 	@Override
@@ -310,10 +398,16 @@ public class FederatedWorkerHandler extends ChannelInboundHandlerAdapter {
 
 	private static class CloseListener implements ChannelFutureListener {
 		@Override
-		public void operationComplete(ChannelFuture channelFuture) throws InterruptedException, DMLRuntimeException {
-			if (!channelFuture.isSuccess())
-				throw new DMLRuntimeException("Federated Worker Write failed");
-			channelFuture.channel().close().sync();
+		public void operationComplete(ChannelFuture channelFuture) throws InterruptedException {
+			if(!channelFuture.isSuccess()) {
+				log.error("Federated Worker Write failed");
+				channelFuture.channel().writeAndFlush(new FederatedResponse(ResponseType.ERROR,
+					new FederatedWorkerHandlerException("Error while sending response."))).channel().close().sync();
+			}
+			else {
+				PrivacyMonitor.clearCheckedConstraints();
+				channelFuture.channel().close().sync();
+			}
 		}
 	}
 }

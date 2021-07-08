@@ -30,7 +30,7 @@ import org.apache.sysds.lops.CumulativeOffsetBinary;
 import org.apache.sysds.lops.CumulativePartialAggregate;
 import org.apache.sysds.lops.Data;
 import org.apache.sysds.lops.Lop;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.lops.PickByCount;
 import org.apache.sysds.lops.SortKeys;
 import org.apache.sysds.lops.Unary;
@@ -182,7 +182,7 @@ public class UnaryOp extends MultiThreadedHop
 		
 		//add reblock/checkpoint lops if necessary
 		constructAndSetLopsDataFlowProperties();
-		
+
 		return getLops();
 	}
 	
@@ -446,7 +446,9 @@ public class UnaryOp extends MultiThreadedHop
 	public boolean isExpensiveUnaryOperation()  {
 		return (_op == OpOp1.EXP 
 			|| _op == OpOp1.LOG
-			|| _op == OpOp1.SIGMOID);
+			|| _op == OpOp1.SIGMOID
+			|| _op == OpOp1.COMPRESS
+			|| _op == OpOp1.DECOMPRESS);
 	}
 	
 	public boolean isMetadataOperation() {
@@ -510,6 +512,9 @@ public class UnaryOp extends MultiThreadedHop
 			|| getInput().get(0).getDataType() == DataType.LIST || isMetadataOperation() )
 		{
 			_etype = ExecType.CP;
+		} else {
+			updateETFed();
+			setRequiresRecompileIfNecessary();
 		}
 		
 		return _etype;
@@ -539,7 +544,8 @@ public class UnaryOp extends MultiThreadedHop
 			setDim1(input.getDim1());
 			setDim2(1);
 		}
-		else if(_op == OpOp1.TYPEOF || _op == OpOp1.DETECTSCHEMA) {
+		else if(_op == OpOp1.TYPEOF || _op == OpOp1.DETECTSCHEMA || _op == OpOp1.COLNAMES) {
+			//TODO theses three builtins should rather be moved to unary aggregates
 			setDim1(1);
 			setDim2(input.getDim2());
 		}

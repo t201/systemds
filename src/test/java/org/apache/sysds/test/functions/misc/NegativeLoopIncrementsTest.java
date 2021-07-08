@@ -21,12 +21,12 @@ package org.apache.sysds.test.functions.misc;
 
 import java.util.HashMap;
 
-import org.junit.Test;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.runtime.meta.MatrixCharacteristics;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
 import org.apache.sysds.test.TestUtils;
+import org.junit.Test;
 
 /**
  * 
@@ -112,8 +112,8 @@ public class NegativeLoopIncrementsTest extends AutomatedTestBase
 		runRScript(true); 
 		
 		//compare matrices 
-		HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("R");
-		HashMap<CellIndex, Double> rfile  = readRMatrixFromFS("R");
+		HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("R");
+		HashMap<CellIndex, Double> rfile  = readRMatrixFromExpectedDir("R");
 		TestUtils.compareMatrices(dmlfile, rfile, eps, "Stat-DML", "Stat-R");
 			
 		//check meta data

@@ -19,6 +19,22 @@
 
 package org.apache.sysds.runtime.matrix.data;
 
+import java.io.DataInput;
+import java.io.DataOutput;
+import java.io.Externalizable;
+import java.io.IOException;
+import java.io.ObjectInput;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutput;
+import java.io.ObjectOutputStream;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.stream.IntStream;
+
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.concurrent.ConcurrentUtils;
 import org.apache.commons.math3.random.Well1024a;
@@ -30,6 +46,8 @@ import org.apache.sysds.hops.OptimizerUtils;
 import org.apache.sysds.lops.MMTSJ.MMTSJType;
 import org.apache.sysds.lops.MapMultChain.ChainType;
 import org.apache.sysds.runtime.DMLRuntimeException;
+import org.apache.sysds.runtime.compress.CompressedMatrixBlock;
+import org.apache.sysds.runtime.compress.lib.CLALibBinaryCellOp;
 import org.apache.sysds.runtime.controlprogram.caching.CacheBlock;
 import org.apache.sysds.runtime.controlprogram.caching.LazyWriteBuffer;
 import org.apache.sysds.runtime.controlprogram.caching.MatrixObject.UpdateType;
@@ -95,25 +113,9 @@ import org.apache.sysds.runtime.util.IndexRange;
 import org.apache.sysds.runtime.util.UtilFunctions;
 import org.apache.sysds.utils.NativeHelper;
 
-import java.io.DataInput;
-import java.io.DataOutput;
-import java.io.Externalizable;
-import java.io.IOException;
-import java.io.ObjectInput;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutput;
-import java.io.ObjectOutputStream;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.Iterator;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
-import java.util.stream.IntStream;
 
-
-public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizable
-{
+public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizable {
+	
 	private static final long serialVersionUID = 7319972089143154056L;
 	
 	//sparsity nnz threshold, based on practical experiments on space consumption and performance
@@ -144,7 +146,7 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 	protected SparseBlock sparseBlock = null;
 	
 	//sparse-block-specific attributes (allocation only)
-	protected int estimatedNNzsPerRow = -1; 
+	protected int estimatedNNzsPerRow = -1;
 	
 	////////
 	// Matrix Constructors
@@ -207,6 +209,13 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 		}
 	}
 	
+	public MatrixBlock(int rl, int cl, DenseBlock dBlock){
+		rlen = rl;
+		clen = cl;
+		sparse = false;
+		denseBlock = dBlock;
+	}
+
 	////////
 	// Initialization methods
 	// (reset, init, allocate, etc)
@@ -463,7 +472,7 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 	public int getNumColumns() {
 		return clen;
 	}
-	
+
 	public void setNumColumns(int c) {
 		clen = c;
 	}
@@ -481,6 +490,7 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 		return OptimizerUtils.getSparsity(rlen, clen, nonZeros);
 	}
 	
+	@Override
 	public DataCharacteristics getDataCharacteristics() {
 		return new MatrixCharacteristics(rlen, clen, -1, nonZeros);
 	}
@@ -521,6 +531,10 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 	
 	public DenseBlock getDenseBlock() {
 		return denseBlock;
+	}
+
+	public void setDenseBlock(DenseBlock dblock){
+		denseBlock = dblock;
 	}
 	
 	public double[] getDenseBlockValues() {
@@ -629,11 +643,75 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 				nonZeros--;
 		}
 	}
-	
+
+	/*
+		Thread save set.
+		Blocks need to be allocated, and in case of MCSR sparse, all rows 
+		that are going to be accessed need to be allocated as well.
+	 */
+	public void quickSetValueThreadSafe(int r, int c, double v) {
+		if(sparse) {
+			if(!(sparseBlock instanceof SparseBlockMCSR))
+				throw new RuntimeException("Only MCSR Blocks are supported for Multithreaded sparse set.");
+			synchronized (sparseBlock.get(r)) {
+				sparseBlock.set(r,c,v);
+			}
+		}
+		else
+			denseBlock.set(r,c,v);
+	}
+
+	public double quickGetValueThreadSafe(int r, int c) {
+		if(sparse) {
+			if(!(sparseBlock instanceof SparseBlockMCSR))
+				throw new RuntimeException("Only MCSR Blocks are supported for Multithreaded sparse get.");
+			synchronized (sparseBlock.get(r)) {
+				return sparseBlock.get(r,c);
+			}
+		}
+		else
+			return denseBlock.get(r,c);
+	}
+
 	public double getValueDenseUnsafe(int r, int c) {
 		if(denseBlock==null)
 			return 0;
 		return denseBlock.get(r, c);
+	}
+	
+	public boolean containsValue(double pattern) {
+		//fast paths: infer from meta data only
+		if(isEmptyBlock(true))
+			return pattern==0;
+		if( nonZeros < getLength() && pattern == 0 )
+			return true;
+		
+		//make a pass over the data to determine if it includes the
+		//pattern, with early abort as soon as the pattern is found
+		boolean NaNpattern = Double.isNaN(pattern);
+		if( isInSparseFormat() ) {
+			SparseBlock sb = getSparseBlock();
+			for(int i=0; i<rlen; i++) {
+				if( sb.isEmpty(i) ) continue;
+				int apos = sb.pos(i);
+				int alen = sb.size(i);
+				double[] avals = sb.values(i);
+				for( int j=apos; j<apos+alen; j++ )
+					if(avals[j]==pattern || (NaNpattern && Double.isNaN(avals[j])))
+						return true;
+			}
+		}
+		else {
+			DenseBlock db = getDenseBlock();
+			for(int i=0; i<rlen; i++) {
+				double[] vals = db.values(i);
+				int pos = db.pos(i);
+				for(int j=pos; j<pos+clen; j++)
+					if(vals[j]==pattern || (NaNpattern && Double.isNaN(vals[j])))
+						return true;
+			}
+		}
+		return false;
 	}
 	
 	/**
@@ -650,8 +728,7 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 		if( v == 0 ) 
 			return;
 
-		if( !sparse ) //DENSE 
-		{
+		if( !sparse ) { //DENSE 
 			//allocate on demand (w/o overwriting nnz)
 			allocateDenseBlock(false);
 			
@@ -659,8 +736,7 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 			denseBlock.set(r, c, v);
 			nonZeros++;
 		}
-		else //SPARSE
-		{
+		else { //SPARSE
 			//allocation on demand (w/o overwriting nnz)
 			allocateSparseRowsBlock(false);
 			sparseBlock.allocate(r, estimatedNNzsPerRow, clen);
@@ -671,6 +747,28 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 		}
 	}
 
+	public void appendValuePlain(int r, int c, double v) {
+		//early abort (append guarantees no overwrite)
+		if( v == 0 ) 
+			return;
+
+		if( !sparse ) { //DENSE 
+			//allocate on demand (w/o overwriting nnz)
+			allocateDenseBlock(false);
+			
+			//set value and maintain nnz
+			denseBlock.set(r, c, v);
+		}
+		else { //SPARSE
+			//allocation on demand (w/o overwriting nnz)
+			allocateSparseRowsBlock(false);
+			sparseBlock.allocate(r, estimatedNNzsPerRow, clen);
+			
+			//set value and maintain nnz
+			sparseBlock.append(r, c, v);
+		}
+	}
+	
 	public void appendRow(int r, SparseRow row) {
 		appendRow(r, row, true);
 	}
@@ -916,11 +1014,11 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 			&& (!checkNnz || nonZeros<ULTRA_SPARSE_BLOCK_NNZ);
 	}
 	
-	public boolean isUltraSparsePermutationMatrix() {
-		if( !isUltraSparse(false) )
+	public boolean isSparsePermutationMatrix() {
+		if( !isInSparseFormat() || nonZeros > rlen )
 			return false;
-		boolean isPM = true;
 		SparseBlock sblock = getSparseBlock();
+		boolean isPM = (sblock != null);
 		for( int i=0; i<rlen & isPM; i++ )
 			isPM &= sblock.isEmpty(i) || sblock.size(i) == 1;
 		return isPM;
@@ -980,6 +1078,16 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 		return evalSparseFormatOnDisk(rlen, clen, nonZeros);
 	}
 	
+	/**
+	 * Evaluates if this matrix block should be in sparse format in
+	 * memory. Depending on the current representation, the state of the
+	 * matrix block is changed to the right representation if necessary. 
+	 * Note that this consumes for the time of execution memory for both 
+	 * representations.
+	 * 
+	 * Allowing CSR format is default for this operation.
+	 * 
+	 */
 	public void examSparsity() {
 		examSparsity(true);
 	}
@@ -998,8 +1106,9 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 		boolean sparseDst = evalSparseFormatInMemory(); 
 		
 		//check for empty blocks (e.g., sparse-sparse)
-		if( isEmptyBlock(false) )
+		if( isEmptyBlock(false) ) {
 			cleanupBlock(true, true);
+		}
 		
 		//change representation if required (also done for 
 		//empty blocks in order to set representation flags)
@@ -1396,9 +1505,9 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 	 * only done if 'awareDestNZ=true', 
 	 * 
 	 * @param rl row lower index, 0-based
-	 * @param ru row upper index, 0-based
+	 * @param ru row upper index, 0-based, inclusive
 	 * @param cl column lower index, 0-based
-	 * @param cu column upper index, 0-based
+	 * @param cu column upper index, 0-based, inclusive
 	 * @param src matrix block
 	 * @param awareDestNZ
 	 *           true, forces (1) to remove existing non-zeros in the index range of the 
@@ -1602,7 +1711,6 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 		merge((MatrixBlock)that, appendOnly);
 	}
 
-	
 	/**
 	 * Merge disjoint: merges all non-zero values of the given input into the current
 	 * matrix block. Note that this method does NOT check for overlapping entries;
@@ -2355,6 +2463,17 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 	////////
 	// Estimates size and sparsity
 
+	public static long getHeaderSize() {
+		// basic variables and references sizes
+		long size = 16; // header
+		size += 12; // 3 x ints (rlen, clen, ennz/row)
+		size += 1; // boolean (sparse)
+		size += 3; // padding
+		size += 8; // nonZeros
+		size += 2 * 8; // object references
+		return size;
+	}
+	
 	public long estimateSizeInMemory() {
 		return estimateSizeInMemory(rlen, clen, getSparsity());
 	}
@@ -2363,7 +2482,7 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 	{
 		//determine sparse/dense representation
 		boolean sparse = evalSparseFormatInMemory(nrows, ncols, (long)(sparsity*nrows*ncols));
-		
+
 		//estimate memory consumption for sparse/dense
 		if( sparse )
 			return estimateSizeSparseInMemory(nrows, ncols, sparsity);
@@ -2371,14 +2490,9 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 			return estimateSizeDenseInMemory(nrows, ncols);
 	}
 
-	public static long estimateSizeDenseInMemory(long nrows, long ncols)
-	{
-		// basic variables and references sizes
-		double size = 44;
-		
-		// core dense matrix block (double array)
-		size += 8d * nrows * ncols;
-		
+	public static long estimateSizeDenseInMemory(long nrows, long ncols) {
+		double size = getHeaderSize()
+			+ DenseBlockFactory.estimateSizeDenseInMemory(nrows, ncols);
 		// robustness for long overflows
 		return (long) Math.min(size, Long.MAX_VALUE);
 	}
@@ -2387,15 +2501,9 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 		return estimateSizeSparseInMemory(nrows, ncols, sparsity, DEFAULT_SPARSEBLOCK);
 	}
 	
-	public static long estimateSizeSparseInMemory(long nrows, long ncols, double sparsity, SparseBlock.Type stype)
-	{
-		// basic variables and references sizes
-		double size = 44;
-		
-		// delegate memory estimate to individual sparse blocks
-		size += SparseBlockFactory.estimateSizeSparseInMemory(
-			stype, nrows, ncols, sparsity);
-		
+	public static long estimateSizeSparseInMemory(long nrows, long ncols, double sparsity, SparseBlock.Type stype) {
+		double size = getHeaderSize() + ((sparsity == 0) ? 0 : //allocated on demand
+			SparseBlockFactory.estimateSizeSparseInMemory(stype, nrows, ncols, sparsity));
 		// robustness for long overflows
 		return (long) Math.min(size, Long.MAX_VALUE);
 	}
@@ -2550,7 +2658,7 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 	public long getInMemorySize() {
 		//in-memory size given by header if not allocated
 		if( !isAllocated() ) 
-			return 44;
+			return getHeaderSize();
 		//in-memory size of dense/sparse representation
 		return !sparse ? estimateSizeDenseInMemory(rlen, clen) :
 			estimateSizeSparseInMemory(rlen, clen, getSparsity(),
@@ -2615,7 +2723,10 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 			ret.reset(rlen, clen, sp, this.nonZeros);
 		
 		//core scalar operations
-		LibMatrixBincell.bincellOp(this, ret, op);
+		if( op.getNumThreads() > 1 )
+			LibMatrixBincell.bincellOp(this, ret, op, op.getNumThreads());
+		else
+			LibMatrixBincell.bincellOp(this, ret, op);
 		
 		return ret;
 	}
@@ -2634,6 +2745,11 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 			ret = new MatrixBlock(rlen, n, sp, sp ? nonZeros : rlen*n);
 		else
 			ret.reset(rlen, n, sp);
+		
+		//early abort for comparisons w/ special values
+		if( Builtin.isBuiltinCode(op.fn, BuiltinCode.ISNAN, BuiltinCode.ISNA))
+			if( !containsValue(op.getPattern()) )
+				return ret; //avoid unnecessary allocation
 		
 		//core execute
 		if( LibMatrixAgg.isSupportedUnaryOperator(op) ) {
@@ -2777,10 +2893,7 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 	public MatrixBlock binaryOperations(BinaryOperator op, MatrixValue thatValue, MatrixValue result) {
 		MatrixBlock that = checkType(thatValue);
 		MatrixBlock ret = checkType(result);
-		if( !LibMatrixBincell.isValidDimensionsBinary(this, that) ) {
-			throw new RuntimeException("Block sizes are not matched for binary " +
-					"cell operations: "+this.rlen+"x"+this.clen+" vs "+ that.rlen+"x"+that.clen);
-		}
+		LibMatrixBincell.isValidDimensionsBinary(this, that);
 		
 		//compute output dimensions
 		boolean outer = (LibMatrixBincell.getBinaryAccessType(this, that)
@@ -2796,18 +2909,18 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 			ret.reset(rows, cols, resultSparse.sparse, resultSparse.estimatedNonZeros);
 		
 		//core binary cell operation
-		LibMatrixBincell.bincellOp( this, that, ret, op );
+		if( op.getNumThreads() > 1 )
+			LibMatrixBincell.bincellOp( this, that, ret, op, op.getNumThreads() );
+		else
+			LibMatrixBincell.bincellOp( this, that, ret, op );
 		
 		return ret;
 	}
 
 	@Override
-	public void binaryOperationsInPlace(BinaryOperator op, MatrixValue thatValue) {
+	public MatrixBlock binaryOperationsInPlace(BinaryOperator op, MatrixValue thatValue) {
 		MatrixBlock that=checkType(thatValue);
-		if( !LibMatrixBincell.isValidDimensionsBinary(this, that) ) {
-			throw new RuntimeException("block sizes are not matched for binary " +
-					"cell operations: "+this.rlen+"*"+this.clen+" vs "+ that.rlen+"*"+that.clen);
-		}
+		LibMatrixBincell.isValidDimensionsBinary(this, that);
 	
 		//estimate output sparsity
 		SparsityEstimate resultSparse = estimateSparsityOnBinary(this, that, op);
@@ -2818,6 +2931,7 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 		
 		//core binary cell operation
 		LibMatrixBincell.bincellOpInPlace(this, that, op);
+		return this;
 	}
 	
 	public MatrixBlock ternaryOperations(TernaryOperator op, MatrixBlock m2, MatrixBlock m3, MatrixBlock ret) {
@@ -2841,7 +2955,10 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 		}
 		
 		//prepare result
-		ret.reset(m, n, false);
+		boolean sparseOutput = (op.fn instanceof PlusMultiply || op.fn instanceof MinusMultiply)?
+			evalSparseFormatInMemory(m, n, (s1?m*n*(d1!=0?1:0):getNonZeros())
+				+ Math.min(s2?m*n:m2.getNonZeros(), s3?m*n:m3.getNonZeros())) : false;
+		ret.reset(m, n, sparseOutput);
 		
 		if( op.fn instanceof IfElse && (s1 || nnz==0 || nnz==(long)m*n) ) {
 			//SPECIAL CASE for shallow-copy if-else
@@ -2863,21 +2980,15 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 		}
 		else if (s2 != s3 && (op.fn instanceof PlusMultiply || op.fn instanceof MinusMultiply) ) {
 			//SPECIAL CASE for sparse-dense combinations of common +* and -*
-			BinaryOperator bop = ((ValueFunctionWithConstant)op.fn)
-				.setOp2Constant(s2 ? d2 : d3);
-			LibMatrixBincell.bincellOp(this, s2 ? m3 : m2, ret, bop);
+			BinaryOperator bop = ((ValueFunctionWithConstant)op.fn).setOp2Constant(s2 ? d2 : d3);
+			if( op.getNumThreads() > 1 )
+				LibMatrixBincell.bincellOp(this, s2 ? m3 : m2, ret, bop, op.getNumThreads());
+			else
+				LibMatrixBincell.bincellOp(this, s2 ? m3 : m2, ret, bop);
 		}
 		else {
-			ret.allocateDenseBlock();
-			
-			//basic ternary operations
-			for( int i=0; i<m; i++ )
-				for( int j=0; j<n; j++ ) {
-					double in1 = s1 ? d1 : quickGetValue(i, j);
-					double in2 = s2 ? d2 : m2.quickGetValue(i, j);
-					double in3 = s3 ? d3 : m3.quickGetValue(i, j);
-					ret.appendValue(i, j, op.fn.execute(in1, in2, in3));
-				}
+			//DEFAULT CASE
+			LibMatrixTercell.tercellOp(this, m2, m3, ret, op);
 			
 			//ensure correct output representation
 			ret.examSparsity();
@@ -3577,7 +3688,10 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 		for( MatrixBlock in : inputs ) {
 			if( in.isEmptyBlock(false) )
 				continue;
-			if( in.isInSparseFormat() ) {
+			if(in instanceof CompressedMatrixBlock){
+				in = CLALibBinaryCellOp.binaryMVRow((CompressedMatrixBlock) in,c, null, new BinaryOperator(Plus.getPlusFnObject()), false);
+			}
+			else if( in.isInSparseFormat() ) {
 				SparseBlock a = in.getSparseBlock();
 				if( a.isEmpty(i) ) continue;
 				LibMatrixMult.vectAdd(a.values(i), c, a.indexes(i), a.pos(i), cix, a.size(i));
@@ -3667,18 +3781,8 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 	}
 
 	public MatrixBlock chainMatrixMultOperations( MatrixBlock v, MatrixBlock w, MatrixBlock out, ChainType ctype, int k ) {
-		//check for transpose type
-		if( !(ctype == ChainType.XtXv || ctype == ChainType.XtwXv || ctype == ChainType.XtXvy) )
-			throw new DMLRuntimeException("Invalid mmchain type '"+ctype.toString()+"'.");
-		
-		//check for matching dimensions
-		if( this.getNumColumns() != v.getNumRows() )
-			throw new DMLRuntimeException("Dimensions mismatch on mmchain operation ("+this.getNumColumns()+" != "+v.getNumRows()+")");
-		if( v.getNumColumns() != 1 )
-			throw new DMLRuntimeException("Invalid input vector (column vector expected, but ncol="+v.getNumColumns()+")");
-		if( w!=null && w.getNumColumns() != 1 )
-			throw new DMLRuntimeException("Invalid weight vector (column vector expected, but ncol="+w.getNumColumns()+")");
-		
+		checkMMChain(ctype, v, w);
+
 		//prepare result
 		if( out != null )
 			out.reset(clen, 1, false);
@@ -3692,6 +3796,21 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 			LibMatrixMult.matrixMultChain(this, v, w, out, ctype);
 		
 		return out;
+	}
+
+	protected void checkMMChain(ChainType ctype, MatrixBlock v, MatrixBlock w){
+		//check for transpose type
+		if( !(ctype == ChainType.XtXv || ctype == ChainType.XtwXv || ctype == ChainType.XtXvy) )
+			throw new DMLRuntimeException("Invalid mmchain type '"+ctype.toString()+"'.");
+
+		//check for matching dimensions
+		if( this.getNumColumns() != v.getNumRows() )
+			throw new DMLRuntimeException("Dimensions mismatch on mmchain operation ("+this.getNumColumns()+" != "+v.getNumRows()+")");
+		if( v.getNumColumns() != 1 )
+			throw new DMLRuntimeException("Invalid input vector (column vector expected, but ncol="+v.getNumColumns()+")");
+		if( w!=null && w.getNumColumns() != 1 )
+			throw new DMLRuntimeException("Invalid weight vector (column vector expected, but ncol="+w.getNumColumns()+")");
+			
 	}
 
 	public void permutationMatrixMultOperations( MatrixValue m2Val, MatrixValue out1Val, MatrixValue out2Val ) {
@@ -3847,34 +3966,50 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 			(int)ixrange.colStart, (int)ixrange.colEnd, true, ret);
 	}
 	
+	/**
+	 * Slice out a row block
+	 * @param rl The row lower to start from 
+	 * @param ru The row lower to end at
+	 * @return The sliced out matrix block.
+	 */
 	public MatrixBlock slice(int rl, int ru) {
-		return slice(rl, ru, 0, clen-1, true, new MatrixBlock());
+		return slice(rl, ru, 0, clen-1, true, null);
+	}
+
+	public MatrixBlock slice(int rl, int ru, boolean deep){
+		return slice(rl,ru, 0, clen-1, deep, null);
 	}
 	
+	public MatrixBlock slice(int rl, int ru, int cl, int cu){
+		return slice(rl, ru, cl, cu, true, null);
+	}
+
 	@Override
 	public MatrixBlock slice(int rl, int ru, int cl, int cu, CacheBlock ret) {
 		return slice(rl, ru, cl, cu, true, ret);
+	}
+
+	public MatrixBlock slice(int rl, int ru, int cl, int cu, boolean deep){
+		return slice(rl, ru, cl, cu, deep, null);
 	}
 	
 	/**
 	 * Method to perform rightIndex operation for a given lower and upper bounds in row and column dimensions.
 	 * Extracted submatrix is returned as "result". Note: This operation is now 0-based.
 	 * 
-	 * @param rl row lower
-	 * @param ru row upper
-	 * @param cl column lower
-	 * @param cu column upper
-	 * @param deep should perform deep copy
-	 * @param ret output matrix block
+	 * This means that if you call with rl == ru then you get 1 row output.
+	 * 
+	 * @param rl row lower if this value is bellow 0 or above the number of rows contained in the matrix an execption is thrown
+	 * @param ru row upper if this value is bellow rl or above the number of rows contained in the matrix an exception is thrown
+	 * @param cl column lower if this value us bellow 0 or above the number of columns contained in the matrix an exception is thrown
+	 * @param cu column upper if this value us bellow cl or above the number of columns contained in the matrix an exception is thrown
+	 * @param deep should perform deep copy, this is relelvant in cases where the matrix is in sparse format,
+	 *            or the entire matrix is sliced out
+	 * @param ret output sliced out matrix block
 	 * @return matrix block output matrix block
 	 */
 	public MatrixBlock slice(int rl, int ru, int cl, int cu, boolean deep, CacheBlock ret) {
-		// check the validity of bounds
-		if ( rl < 0 || rl >= getNumRows() || ru < rl || ru >= getNumRows()
-				|| cl < 0 || cl >= getNumColumns() || cu < cl || cu >= getNumColumns() ) {
-			throw new DMLRuntimeException("Invalid values for matrix indexing: ["+(rl+1)+":"+(ru+1)+"," + (cl+1)+":"+(cu+1)+"] " 
-				+ "must be within matrix dimensions ["+getNumRows()+","+getNumColumns()+"]");
-		}
+		validateSliceArgument(rl, ru, cl, cu);
 		
 		// Output matrix will have the same sparsity as that of the input matrix.
 		// (assuming a uniform distribution of non-zeros in the input)
@@ -3904,6 +4039,15 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 		}
 		
 		return result;
+	}
+
+	protected void validateSliceArgument(int rl, int ru, int cl, int cu){
+		// check the validity of bounds
+		if ( rl < 0 || rl >= getNumRows() || ru < rl || ru >= getNumRows()
+				|| cl < 0 || cl >= getNumColumns() || cu < cl || cu >= getNumColumns() ) {
+			throw new DMLRuntimeException("Invalid values for matrix indexing: ["+(rl+1)+":"+(ru+1)+"," + (cl+1)+":"+(cu+1)+"] " 
+				+ "must be within matrix dimensions ["+getNumRows()+","+getNumColumns()+"]");
+		}
 	}
 
 	private void sliceSparse(int rl, int ru, int cl, int cu, boolean deep, MatrixBlock dest) {
@@ -3988,14 +4132,14 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 		int rowCut, int colCut, int blen, int boundaryRlen, int boundaryClen)
 	{
 		MatrixBlock topleft=null, topright=null, bottomleft=null, bottomright=null;
-		Iterator<IndexedMatrixValue> p=outlist.iterator();
+		Iterator<IndexedMatrixValue> p = outlist.iterator();
 		int blockRowFactor=blen, blockColFactor=blen;
 		if(rowCut>range.rowEnd)
 			blockRowFactor=boundaryRlen;
 		if(colCut>range.colEnd)
 			blockColFactor=boundaryClen;
 		
-		int minrowcut=(int)Math.min(rowCut,range.rowEnd);
+		int minrowcut=(int)Math.min(rowCut, range.rowEnd);
 		int mincolcut=(int)Math.min(colCut, range.colEnd);
 		int maxrowcut=(int)Math.max(rowCut, range.rowStart);
 		int maxcolcut=(int)Math.max(colCut, range.colStart);
@@ -4003,9 +4147,6 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 		if(range.rowStart<rowCut && range.colStart<colCut)
 		{
 			topleft=(MatrixBlock) p.next().getValue();
-			//topleft.reset(blockRowFactor, blockColFactor, 
-			//		checkSparcityOnSlide(rowCut-(int)range.rowStart, colCut-(int)range.colStart, blockRowFactor, blockColFactor));
-			
 			topleft.reset(blockRowFactor, blockColFactor, 
 					estimateSparsityOnSlice(minrowcut-(int)range.rowStart, mincolcut-(int)range.colStart, blockRowFactor, blockColFactor));
 		}
@@ -4028,43 +4169,36 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 					estimateSparsityOnSlice((int)range.rowEnd-maxrowcut+1, (int)range.colEnd-maxcolcut+1, boundaryRlen, boundaryClen));
 		}
 		
-		if(sparse)
-		{
-			if(sparseBlock!=null)
-			{
-				int r=(int)range.rowStart;
-				for(; r<Math.min(Math.min(rowCut, sparseBlock.numRows()), range.rowEnd+1); r++)
-					sliceHelp(r, range, colCut, topleft, topright, blen-rowCut, blen, blen);
-				
-				for(; r<=Math.min(range.rowEnd, sparseBlock.numRows()-1); r++)
-					sliceHelp(r, range, colCut, bottomleft, bottomright, -rowCut, blen, blen);
-			}
+		if(sparse && sparseBlock!=null){
+			int r=(int)range.rowStart;
+			for(; r<Math.min(Math.min(rowCut, sparseBlock.numRows()), range.rowEnd+1); r++)
+				sliceHelp(r, range, colCut, topleft, topright, blen-rowCut, blen, blen);
+			
+			for(; r<=Math.min(range.rowEnd, sparseBlock.numRows()-1); r++)
+				sliceHelp(r, range, colCut, bottomleft, bottomright, -rowCut, blen, blen);
 		}
-		else {
-			if(denseBlock!=null)
+		else if(denseBlock!=null){
+			double[] a = getDenseBlockValues();
+			int i=((int)range.rowStart)*clen;
+			int r=(int) range.rowStart;
+			for(; r<Math.min(rowCut, range.rowEnd+1); r++)
 			{
-				double[] a = getDenseBlockValues();
-				int i=((int)range.rowStart)*clen;
-				int r=(int) range.rowStart;
-				for(; r<Math.min(rowCut, range.rowEnd+1); r++)
-				{
-					int c=(int) range.colStart;
-					for(; c<Math.min(colCut, range.colEnd+1); c++)
-						topleft.appendValue(r+blen-rowCut, c+blen-colCut, a[i+c]);
-					for(; c<=range.colEnd; c++)
-						topright.appendValue(r+blen-rowCut, c-colCut, a[i+c]);
-					i+=clen;
-				}
-				
-				for(; r<=range.rowEnd; r++)
-				{
-					int c=(int) range.colStart;
-					for(; c<Math.min(colCut, range.colEnd+1); c++)
-						bottomleft.appendValue(r-rowCut, c+blen-colCut, a[i+c]);
-					for(; c<=range.colEnd; c++)
-						bottomright.appendValue(r-rowCut, c-colCut, a[i+c]);
-					i+=clen;
-				}
+				int c=(int) range.colStart;
+				for(; c<Math.min(colCut, range.colEnd+1); c++)
+					topleft.appendValue(r+blen-rowCut, c+blen-colCut, a[i+c]);
+				for(; c<=range.colEnd; c++)
+					topright.appendValue(r+blen-rowCut, c-colCut, a[i+c]);
+				i+=clen;
+			}
+			
+			for(; r<=range.rowEnd; r++)
+			{
+				int c=(int) range.colStart;
+				for(; c<Math.min(colCut, range.colEnd+1); c++)
+					bottomleft.appendValue(r-rowCut, c+blen-colCut, a[i+c]);
+				for(; c<=range.colEnd; c++)
+					bottomright.appendValue(r-rowCut, c-colCut, a[i+c]);
+				i+=clen;
 			}
 		}
 	}
@@ -4250,6 +4384,28 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 	@Override
 	public MatrixBlock aggregateUnaryOperations(AggregateUnaryOperator op, MatrixValue result,
 			int blen, MatrixIndexes indexesIn, boolean inCP)  {
+
+		MatrixBlock ret = prepareAggregateUnaryOutput(op,result,blen);
+		
+		if( LibMatrixAgg.isSupportedUnaryAggregateOperator(op) ) {
+			if( op.getNumThreads() > 1 )
+				LibMatrixAgg.aggregateUnaryMatrix(this, ret, op, op.getNumThreads());
+			else
+				LibMatrixAgg.aggregateUnaryMatrix(this, ret, op);
+			LibMatrixAgg.recomputeIndexes(ret, op, blen, indexesIn);
+		}
+		else if(op.sparseSafe)
+			sparseAggregateUnaryHelp(op, ret, blen, indexesIn);
+		else
+			denseAggregateUnaryHelp(op, ret, blen, indexesIn);
+		
+		if(op.aggOp.existsCorrection() && inCP)
+			((MatrixBlock)result).dropLastRowsOrColumns(op.aggOp.correction);
+		
+		return ret;
+	}
+
+	public MatrixBlock prepareAggregateUnaryOutput(AggregateUnaryOperator op, MatrixValue result, int blen){
 		CellIndex tempCellIndex = new CellIndex(-1,-1);
 		op.indexFn.computeDimension(rlen, clen, tempCellIndex);
 		if(op.aggOp.existsCorrection())
@@ -4284,24 +4440,7 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 			result=new MatrixBlock(tempCellIndex.row, tempCellIndex.column, false);
 		else
 			result.reset(tempCellIndex.row, tempCellIndex.column, false);
-		MatrixBlock ret = (MatrixBlock) result;
-		
-		if( LibMatrixAgg.isSupportedUnaryAggregateOperator(op) ) {
-			if( op.getNumThreads() > 1 )
-				LibMatrixAgg.aggregateUnaryMatrix(this, ret, op, op.getNumThreads());
-			else
-				LibMatrixAgg.aggregateUnaryMatrix(this, ret, op);
-			LibMatrixAgg.recomputeIndexes(ret, op, blen, indexesIn);
-		}
-		else if(op.sparseSafe)
-			sparseAggregateUnaryHelp(op, ret, blen, indexesIn);
-		else
-			denseAggregateUnaryHelp(op, ret, blen, indexesIn);
-		
-		if(op.aggOp.existsCorrection() && inCP)
-			((MatrixBlock)result).dropLastRowsOrColumns(op.aggOp.correction);
-		
-		return ret;
+		return (MatrixBlock)result;
 	}
 	
 	private void sparseAggregateUnaryHelp(AggregateUnaryOperator op, MatrixBlock result,
@@ -4415,7 +4554,7 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 	{
 		//determine number of rows/cols to be removed
 		int step = correctionLocation.getNumRemovedRowsColumns();
-		if( step <= 0 )
+		if( step <= 0)
 			return; 
 		
 		//e.g., colSums, colMeans, colMaxs, colMeans, colVars
@@ -4826,10 +4965,9 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 		}
 		return sum_wt;
 	}
-	
-	public MatrixBlock aggregateBinaryOperations(MatrixIndexes m1Index, MatrixBlock m1, MatrixIndexes m2Index, MatrixBlock m2, 
-		MatrixBlock ret, AggregateBinaryOperator op ) {
-		return aggregateBinaryOperations(m1, m2, ret, op);
+
+	public MatrixBlock aggregateBinaryOperations(MatrixBlock m1, MatrixBlock m2, AggregateBinaryOperator op){
+		return aggregateBinaryOperations(m1, m2, null, op);
 	}
 
 	public MatrixBlock aggregateBinaryOperations(MatrixBlock m1, MatrixBlock m2, MatrixBlock ret, AggregateBinaryOperator op) {
@@ -4863,13 +5001,8 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 		return ret;
 	}
 
-	public MatrixBlock aggregateTernaryOperations(MatrixBlock m1, MatrixBlock m2, MatrixBlock m3, MatrixBlock ret, AggregateTernaryOperator op, boolean inCP) {
-		//check input dimensions and operators
-		if( m1.rlen!=m2.rlen || m1.clen!=m2.clen || (m3!=null && (m2.rlen!=m3.rlen || m2.clen!=m3.clen)) )
-			throw new DMLRuntimeException("Invalid dimensions for aggregate ternary ("+m1.rlen+"x"+m1.clen+", "+m2.rlen+"x"+m2.clen+", "+m3.rlen+"x"+m3.clen+").");
-		if( !( op.aggOp.increOp.fn instanceof KahanPlus && op.binaryFn instanceof Multiply) )
-			throw new DMLRuntimeException("Unsupported operator for aggregate ternary operations.");
-		
+	public MatrixBlock aggregateTernaryOperations(MatrixBlock m1, MatrixBlock m2, MatrixBlock m3, MatrixBlock ret,
+			AggregateTernaryOperator op, boolean inCP) {
 		//create output matrix block w/ corrections
 		int rl = (op.indexFn instanceof ReduceRow) ? 2 : 1;
 		int cl = (op.indexFn instanceof ReduceRow) ? m1.clen : 2;
@@ -5004,10 +5137,13 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 		MatrixBlock ret = checkType(result);
 		examSparsity(); //ensure its in the right format
 		ret.reset(rlen, clen, sparse);
+		//probe early abort conditions
 		if( nonZeros == 0 && pattern != 0  )
-			return ret; //early abort
-		boolean NaNpattern = Double.isNaN(pattern);
+			return ret;
+		if( !containsValue(pattern) )
+			return this; //avoid allocation + copy
 		
+		boolean NaNpattern = Double.isNaN(pattern);
 		if( sparse ) //SPARSE
 		{
 			if( pattern != 0d ) //SPARSE <- SPARSE (sparse-safe)
@@ -5017,15 +5153,13 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 				SparseBlock c = ret.sparseBlock;
 				
 				for( int i=0; i<rlen; i++ ) {
-					if( !a.isEmpty(i) )
-					{
+					if( !a.isEmpty(i) ) {
 						c.allocate(i);
 						int apos = a.pos(i);
 						int alen = a.size(i);
 						int[] aix = a.indexes(i);
 						double[] avals = a.values(i);
-						for( int j=apos; j<apos+alen; j++ )
-						{
+						for( int j=apos; j<apos+alen; j++ ) {
 							double val = avals[j];
 							if( val== pattern || (NaNpattern && Double.isNaN(val)) )
 								c.append(i, aix[j], replacement);
@@ -5038,19 +5172,17 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 			else //DENSE <- SPARSE
 			{
 				ret.sparse = false;
-				ret.allocateDenseBlock();	
+				ret.allocateDenseBlock();
 				SparseBlock a = sparseBlock;
 				double[] c = ret.getDenseBlockValues();
 				
 				//initialize with replacement (since all 0 values, see SPARSITY_TURN_POINT)
-				Arrays.fill(c, replacement); 
+				Arrays.fill(c, replacement);
 				
 				//overwrite with existing values (via scatter)
 				if( a != null  ) //check for empty matrix
-					for( int i=0, cix=0; i<rlen; i++, cix+=clen )
-					{
-						if( !a.isEmpty(i) )
-						{
+					for( int i=0, cix=0; i<rlen; i++, cix+=clen ) {
+						if( !a.isEmpty(i) ) {
 							int apos = a.pos(i);
 							int alen = a.size(i);
 							int[] aix = a.indexes(i);
@@ -5060,22 +5192,16 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 									c[ cix+aix[j] ] = avals[ j ];
 						}
 					}
-			}			
+			}
 		}
-		else //DENSE <- DENSE
-		{
+		else { //DENSE <- DENSE
 			int mn = ret.rlen * ret.clen;
 			ret.allocateDenseBlock();
 			double[] a = getDenseBlockValues();
 			double[] c = ret.getDenseBlockValues();
-			
-			for( int i=0; i<mn; i++ ) 
-			{
-				double val = a[i];
-				if( val== pattern || (NaNpattern && Double.isNaN(val)) )
-					c[i] = replacement;
-				else
-					c[i] = a[i];
+			for( int i=0; i<mn; i++ ) {
+				c[i] = ( a[i]== pattern || (NaNpattern && Double.isNaN(a[i])) ) ?
+					replacement : a[i];
 			}
 		}
 		
@@ -5290,27 +5416,21 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 		if( resultBlock!=null )
 			resultBlock.recomputeNonZeros();
 	}
-	
+
 	/**
-	 *  D = ctable(seq,A,w)
-	 *  this &lt;- seq; thatMatrix &lt;- A; thatScalar &lt;- w; result &lt;- D
-	 *  
-	 * (i1,j1,v1) from input1 (this)
-	 * (i1,j1,v2) from input2 (that)
-	 * (w)  from scalar_input3 (scalarThat2)
-	 * 
 	 * @param thatMatrix matrix value
 	 * @param thatScalar scalar double
 	 * @param resultBlock result matrix block
+	 * @param updateClen when this matrix already has the desired number of columns updateClen can be set to false
 	 * @return resultBlock
 	 */
-	public MatrixBlock ctableSeqOperations(MatrixValue thatMatrix, double thatScalar, MatrixBlock resultBlock) {
+	public MatrixBlock ctableSeqOperations(MatrixValue thatMatrix, double thatScalar, MatrixBlock resultBlock, boolean updateClen) {
 		MatrixBlock that = checkType(thatMatrix);
 		CTable ctable = CTable.getCTableFnObject();
 		double w = thatScalar;
 		
 		//sparse-unsafe ctable execution
-		//(because input values of 0 are invalid and have to result in errors) 		
+		//(because input values of 0 are invalid and have to result in errors)
 		//resultBlock guaranteed to be allocated for ctableexpand
 		//each row in resultBlock will be allocated and will contain exactly one value
 		int maxCol = 0;
@@ -5321,8 +5441,27 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 		
 		//update meta data (initially unknown number of columns)
 		//note: nnz maintained in ctable (via quickset)
-		resultBlock.clen = maxCol;
+		if(updateClen) {
+			resultBlock.clen = maxCol;
+		}
 		return resultBlock;
+	}
+
+	/**
+	 *  D = ctable(seq,A,w)
+	 *  this &lt;- seq; thatMatrix &lt;- A; thatScalar &lt;- w; result &lt;- D
+	 *
+	 * (i1,j1,v1) from input1 (this)
+	 * (i1,j1,v2) from input2 (that)
+	 * (w)  from scalar_input3 (scalarThat2)
+	 *
+	 * @param thatMatrix matrix value
+	 * @param thatScalar scalar double
+	 * @param resultBlock result matrix block
+	 * @return resultBlock
+	 */
+	public MatrixBlock ctableSeqOperations(MatrixValue thatMatrix, double thatScalar, MatrixBlock resultBlock) {
+		return ctableSeqOperations(thatMatrix, thatScalar, resultBlock, true);
 	}
 	
 	/**

@@ -19,12 +19,12 @@
 
 package org.apache.sysds.runtime.controlprogram.paramserv;
 
-import org.apache.commons.lang.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.spark.Partitioner;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.sysds.api.DMLScript;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.common.Types.FileFormat;
 import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.conf.ConfigurationManager;
@@ -71,6 +71,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map.Entry;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -209,33 +210,54 @@ public class ParamservUtils {
 		MatrixBlock sample = MatrixBlock.sampleOperations(numEntries, numEntries, false, seed);
 
 		// Combine the sequence and sample as a table
-		return seq.ctableSeqOperations(sample, 1.0,
-			new MatrixBlock(numEntries, numEntries, true));
+		return seq.ctableSeqOperations(sample, 1.0, new MatrixBlock(numEntries, numEntries, true));
 	}
 
 	/**
-	 * Get the namespace and function name of a given physical func name
-	 * @param funcName physical func name (e.g., "ns:func")
-	 * @param prefix prefix
-	 * @return an string array of size 2 where array[0] is namespace and array[1] is name
+	 * Generates a matrix which when left multiplied with the input matrix will subsample
+	 * @param nsamples number of samples
+	 * @param nrows number of rows in input matrix
+	 * @param seed seed used to generate random number
+	 * @return subsample matrix
 	 */
-	public static String[] getCompleteFuncName(String funcName, String prefix) {
-		String[] keys = DMLProgram.splitFunctionKey(funcName);
-		String ns = (keys.length==2) ? keys[0] : null;
-		String name = (keys.length==2) ? keys[1] : keys[0];
-		return StringUtils.isEmpty(prefix) ? 
-			new String[]{ns, name} : new String[]{ns, name};
+	public static MatrixBlock generateSubsampleMatrix(int nsamples, int nrows, long seed) {
+		MatrixBlock seq = new MatrixBlock(nsamples, nrows, false);
+		// No replacement to preserve as much of the original data as possible
+		MatrixBlock sample = MatrixBlock.sampleOperations(nrows, nsamples, false, seed);
+		return seq.ctableSeqOperations(sample, 1.0, new MatrixBlock(nsamples, nrows, true), false);
+	}
+
+	/**
+	 * Generates a matrix which when left multiplied with the input matrix will replicate n data rows
+	 * @param nsamples number of samples
+	 * @param nrows number of rows in input matrix
+	 * @param seed seed used to generate random number
+	 * @return replication matrix
+	 */
+	public static MatrixBlock generateReplicationMatrix(int nsamples, int nrows, long seed) {
+		MatrixBlock seq = new MatrixBlock(nsamples, nrows, false);
+		// Replacement set to true to provide random replication
+		MatrixBlock sample = MatrixBlock.sampleOperations(nrows, nsamples, true, seed);
+		return seq.ctableSeqOperations(sample, 1.0, new MatrixBlock(nsamples, nrows, true), false);
 	}
 
 	public static ExecutionContext createExecutionContext(ExecutionContext ec,
 		LocalVariableMap varsMap, String updFunc, String aggFunc, int k)
 	{
+		return createExecutionContext(ec, varsMap, updFunc, aggFunc, k, false);
+	}
+
+	public static ExecutionContext createExecutionContext(ExecutionContext ec,
+		LocalVariableMap varsMap, String updFunc, String aggFunc, int k, boolean forceExecTypeCP)
+	{
 		Program prog = ec.getProgram();
 
-		// 1. Recompile the internal program blocks
-		recompileProgramBlocks(k, prog.getProgramBlocks());
+		// 1. Recompile the internal program blocks 
+		recompileProgramBlocks(k, prog.getProgramBlocks(), forceExecTypeCP);
 		// 2. Recompile the imported function blocks
-		prog.getFunctionProgramBlocks().forEach((fname, fvalue) -> recompileProgramBlocks(k, fvalue.getChildBlocks()));
+		boolean opt = prog.getFunctionProgramBlocks(false).isEmpty();
+		prog.getFunctionProgramBlocks(opt)
+			.forEach((fname, fvalue) -> recompileProgramBlocks(k, fvalue.getChildBlocks(), forceExecTypeCP));
 
 		// 3. Copy all functions 
 		return ExecutionContextFactory.createContext(
@@ -252,25 +274,21 @@ public class ParamservUtils {
 	
 	private static Program copyProgramFunctions(Program prog) {
 		Program newProg = new Program(prog.getDMLProg());
-		prog.getFunctionProgramBlocks()
-			.forEach((func, pb) -> putFunction(newProg, copyFunction(func, pb)));
+		boolean opt = prog.getFunctionProgramBlocks(false).isEmpty();
+		for( Entry<String, FunctionProgramBlock> e : prog.getFunctionProgramBlocks(opt).entrySet() ) {
+			String[] parts = DMLProgram.splitFunctionKey(e.getKey());
+			FunctionProgramBlock fpb = ProgramConverter
+				.createDeepCopyFunctionProgramBlock(e.getValue(), new HashSet<>(), new HashSet<>());
+			newProg.addFunctionProgramBlock(parts[0], parts[1], fpb, opt);
+		}
 		return newProg;
 	}
 
-	private static FunctionProgramBlock copyFunction(String funcName, FunctionProgramBlock fpb) {
-		FunctionProgramBlock copiedFunc = ProgramConverter.createDeepCopyFunctionProgramBlock(fpb, new HashSet<>(), new HashSet<>());
-		String[] cfn = getCompleteFuncName(funcName, ParamservUtils.PS_FUNC_PREFIX);
-		copiedFunc._namespace = cfn[0];
-		copiedFunc._functionName = cfn[1];
-		return copiedFunc;
+	public static void recompileProgramBlocks(int k, List<ProgramBlock> pbs) {
+		recompileProgramBlocks(k, pbs, false);
 	}
 
-	private static void putFunction(Program prog, FunctionProgramBlock fpb) {
-		prog.addFunctionProgramBlock(fpb._namespace, fpb._functionName, fpb);
-		prog.addProgramBlock(fpb);
-	}
-
-	private static void recompileProgramBlocks(int k, ArrayList<ProgramBlock> pbs) {
+	public static void recompileProgramBlocks(int k, List<ProgramBlock> pbs, boolean forceExecTypeCP) {
 		// Reset the visit status from root
 		for (ProgramBlock pb : pbs)
 			DMLTranslator.resetHopsDAGVisitStatus(pb.getStatementBlock());
@@ -278,43 +296,49 @@ public class ParamservUtils {
 		// Should recursively assign the level of parallelism
 		// and recompile the program block
 		try {
-			rAssignParallelism(pbs, k, false);
+			if(forceExecTypeCP)
+				rAssignParallelismAndRecompile(pbs, k, true, forceExecTypeCP);
+			else
+				rAssignParallelismAndRecompile(pbs, k, false, forceExecTypeCP);
 		} catch (IOException e) {
 			throw new DMLRuntimeException(e);
 		}
 	}
 
-	private static boolean rAssignParallelism(ArrayList<ProgramBlock> pbs, int k, boolean recompiled) throws IOException {
+	private static boolean rAssignParallelismAndRecompile(List<ProgramBlock> pbs, int k, boolean recompiled, boolean forceExecTypeCP) throws IOException {
 		for (ProgramBlock pb : pbs) {
 			if (pb instanceof ParForProgramBlock) {
 				ParForProgramBlock pfpb = (ParForProgramBlock) pb;
 				pfpb.setDegreeOfParallelism(k);
-				recompiled |= rAssignParallelism(pfpb.getChildBlocks(), 1, recompiled);
+				recompiled |= rAssignParallelismAndRecompile(pfpb.getChildBlocks(), 1, recompiled, forceExecTypeCP);
 			} else if (pb instanceof ForProgramBlock) {
-				recompiled |= rAssignParallelism(((ForProgramBlock) pb).getChildBlocks(), k, recompiled);
+				recompiled |= rAssignParallelismAndRecompile(((ForProgramBlock) pb).getChildBlocks(), k, recompiled, forceExecTypeCP);
 			} else if (pb instanceof WhileProgramBlock) {
-				recompiled |= rAssignParallelism(((WhileProgramBlock) pb).getChildBlocks(), k, recompiled);
+				recompiled |= rAssignParallelismAndRecompile(((WhileProgramBlock) pb).getChildBlocks(), k, recompiled, forceExecTypeCP);
 			} else if (pb instanceof FunctionProgramBlock) {
-				recompiled |= rAssignParallelism(((FunctionProgramBlock) pb).getChildBlocks(), k, recompiled);
+				recompiled |= rAssignParallelismAndRecompile(((FunctionProgramBlock) pb).getChildBlocks(), k, recompiled, forceExecTypeCP);
 			} else if (pb instanceof IfProgramBlock) {
 				IfProgramBlock ipb = (IfProgramBlock) pb;
-				recompiled |= rAssignParallelism(ipb.getChildBlocksIfBody(), k, recompiled);
+				recompiled |= rAssignParallelismAndRecompile(ipb.getChildBlocksIfBody(), k, recompiled, forceExecTypeCP);
 				if (ipb.getChildBlocksElseBody() != null)
-					recompiled |= rAssignParallelism(ipb.getChildBlocksElseBody(), k, recompiled);
+					recompiled |= rAssignParallelismAndRecompile(ipb.getChildBlocksElseBody(), k, recompiled, forceExecTypeCP);
 			} else {
 				StatementBlock sb = pb.getStatementBlock();
 				for (Hop hop : sb.getHops())
-					recompiled |= rAssignParallelism(hop, k, recompiled);
+					recompiled |= rAssignParallelismAndRecompile(hop, k, recompiled);
 			}
 			// Recompile the program block
 			if (recompiled) {
-				Recompiler.recompileProgramBlockInstructions(pb);
+				if(forceExecTypeCP)
+					Recompiler.rRecompileProgramBlock2Forced(pb, pb.getThreadID(), new HashSet<>(), ExecType.CP);
+				else
+					Recompiler.recompileProgramBlockInstructions(pb);
 			}
 		}
 		return recompiled;
 	}
 
-	private static boolean rAssignParallelism(Hop hop, int k, boolean recompiled) {
+	private static boolean rAssignParallelismAndRecompile(Hop hop, int k, boolean recompiled) {
 		if (hop.isVisited()) {
 			return recompiled;
 		}
@@ -326,7 +350,7 @@ public class ParamservUtils {
 		}
 		ArrayList<Hop> inputs = hop.getInput();
 		for (Hop h : inputs) {
-			recompiled |= rAssignParallelism(h, k, recompiled);
+			recompiled |= rAssignParallelismAndRecompile(h, k, recompiled);
 		}
 		hop.setVisited();
 		return recompiled;
@@ -334,7 +358,7 @@ public class ParamservUtils {
 
 	@SuppressWarnings("unused")
 	private static FunctionProgramBlock getFunctionBlock(ExecutionContext ec, String funcName) {
-		String[] cfn = getCompleteFuncName(funcName, null);
+		String[] cfn = DMLProgram.splitFunctionKey(funcName);
 		String ns = cfn[0];
 		String fname = cfn[1];
 		return ec.getProgram().getFunctionProgramBlock(ns, fname);

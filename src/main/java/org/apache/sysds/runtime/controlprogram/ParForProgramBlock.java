@@ -29,7 +29,7 @@ import org.apache.sysds.conf.ConfigurationManager;
 import org.apache.sysds.hops.OptimizerUtils;
 import org.apache.sysds.hops.recompile.Recompiler;
 import org.apache.sysds.lops.Lop;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.parser.DMLProgram;
 import org.apache.sysds.parser.DataIdentifier;
 import org.apache.sysds.parser.ParForStatementBlock;
@@ -37,6 +37,7 @@ import org.apache.sysds.parser.ParForStatementBlock.ResultVar;
 import org.apache.sysds.parser.StatementBlock;
 import org.apache.sysds.parser.VariableSet;
 import org.apache.sysds.runtime.DMLRuntimeException;
+import org.apache.sysds.runtime.controlprogram.caching.CacheableData;
 import org.apache.sysds.runtime.controlprogram.caching.MatrixObject;
 import org.apache.sysds.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysds.runtime.controlprogram.context.SparkExecutionContext;
@@ -77,12 +78,14 @@ import org.apache.sysds.runtime.instructions.cp.Data;
 import org.apache.sysds.runtime.instructions.cp.DoubleObject;
 import org.apache.sysds.runtime.instructions.cp.IntObject;
 import org.apache.sysds.runtime.instructions.cp.ListObject;
+import org.apache.sysds.runtime.instructions.cp.ScalarObject;
 import org.apache.sysds.runtime.instructions.cp.StringObject;
 import org.apache.sysds.runtime.instructions.cp.VariableCPInstruction;
 import org.apache.sysds.runtime.lineage.Lineage;
 import org.apache.sysds.runtime.lineage.LineageItem;
 import org.apache.sysds.runtime.lineage.LineageItemUtils;
 import org.apache.sysds.runtime.meta.DataCharacteristics;
+import org.apache.sysds.runtime.util.CollectionUtils;
 import org.apache.sysds.runtime.util.ProgramConverter;
 import org.apache.sysds.runtime.util.UtilFunctions;
 import org.apache.sysds.utils.Statistics;
@@ -98,6 +101,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 
 
@@ -290,11 +294,12 @@ public class ParForProgramBlock extends ForProgramBlock
 	public static final boolean CREATE_UNSCOPED_RESULTVARS  = true;
 	public static       boolean ALLOW_REUSE_PARTITION_VARS  = true; //reuse partition input matrices, applied only if read-only in surrounding loops
 	public static final int     WRITE_REPLICATION_FACTOR    = 1;
-	public static final int     MAX_RETRYS_ON_ERROR         = 1;
+	public static       int     MAX_RETRYS_ON_ERROR         = 1;
 	public static final boolean FORCE_CP_ON_REMOTE_SPARK    = true; // compile body to CP if exec type forced to Spark
 	public static final boolean LIVEVAR_AWARE_EXPORT        = true; // export only read variables according to live variable analysis
 	public static final boolean RESET_RECOMPILATION_FLAGs   = true;
-	public static final boolean ALLOW_BROADCAST_INPUTS      = false; // enables to broadcast inputs for remote_spark
+	public static       boolean ALLOW_BROADCAST_INPUTS      = true; // enables to broadcast inputs for remote_spark
+	public static final boolean COPY_EVAL_FUNCTIONS         = true; // copy eval functions similar to normal parfor functions
 	
 	public static final String PARFOR_FNAME_PREFIX          = "/parfor/"; 
 	public static final String PARFOR_MR_TASKS_TMP_FNAME    = PARFOR_FNAME_PREFIX + "%ID%_MR_taskfile"; 
@@ -419,6 +424,10 @@ public class ParForProgramBlock extends ForProgramBlock
 		_hasFunctions = ProgramRecompiler.containsAtLeastOneFunction(this);
 		
 		LOG.trace("PARFOR: ParForProgramBlock created with mode = "+_execMode+", optmode = "+_optMode+", numThreads = "+_numThreads);
+	}
+	
+	public static void resetWorkerIDs() {
+		_pwIDSeq.reset();
 	}
 	
 	public long getID() {
@@ -552,20 +561,25 @@ public class ParForProgramBlock extends ForProgramBlock
 		ParForStatementBlock sb = (ParForStatementBlock)getStatementBlock();
 
 		// evaluate from, to, incr only once (assumption: known at for entry)
-		IntObject from = executePredicateInstructions( 1, _fromInstructions, ec );
-		IntObject to   = executePredicateInstructions( 2, _toInstructions, ec );
-		IntObject incr = (_incrementInstructions == null || _incrementInstructions.isEmpty()) ? 
-			new IntObject((from.getLongValue()<=to.getLongValue()) ? 1 : -1) :
-			executePredicateInstructions( 3, _incrementInstructions, ec );
+		ScalarObject from0 = executePredicateInstructions(1, _fromInstructions, ec, false);
+		ScalarObject to0   = executePredicateInstructions(2, _toInstructions, ec, false);
+		ScalarObject incr0 = (_incrementInstructions == null || _incrementInstructions.isEmpty()) ? 
+			new IntObject((from0.getLongValue()<=to0.getLongValue()) ? 1 : -1) :
+			executePredicateInstructions( 3, _incrementInstructions, ec, false);
 		
-		if ( incr.getLongValue() == 0 ) //would produce infinite loop
+		if ( incr0.getLongValue() == 0 ) //would produce infinite loop
 			throw new DMLRuntimeException(this.printBlockErrorLocation() + "Expression for increment "
 				+ "of variable '" + _iterPredVar + "' must evaluate to a non-zero value.");
 		
-		//early exit on num iterations = zero
-		_numIterations = computeNumIterations(from, to, incr);
+		//early exit on num iterations (e.g., for invalid loop bounds)
+		_numIterations = UtilFunctions.getSeqLength( 
+			from0.getDoubleValue(), to0.getDoubleValue(), incr0.getDoubleValue(), false);
 		if( _numIterations <= 0 )
 			return; //avoid unnecessary optimization/initialization
+		
+		IntObject from = new IntObject(from0.getLongValue());
+		IntObject to = new IntObject(to0.getLongValue());
+		IntObject incr = new IntObject(incr0.getLongValue());
 		
 		///////
 		//OPTIMIZATION of ParFOR body (incl all child parfor PBs)
@@ -574,7 +588,7 @@ public class ParForProgramBlock extends ForProgramBlock
 			OptimizationWrapper.setLogLevel(_optLogLevel); //set optimizer log level
 			OptimizationWrapper.optimize(_optMode, sb, this, ec, _monitor); //core optimize
 		}
-		
+
 		///////
 		//DATA PARTITIONING of read-only parent variables of type (matrix,unpartitioned)
 		///////
@@ -652,7 +666,7 @@ public class ParForProgramBlock extends ForProgramBlock
 		for( String var : _variablesDPOriginal.keySet() ) {
 			//cleanup partitioned matrix (if not reused)
 			if( !_variablesDPReuse.keySet().contains(var) )
-				VariableCPInstruction.processRemoveVariableInstruction(ec, var); 
+				VariableCPInstruction.processRmvarInstruction(ec, var); 
 			//reset to original matrix
 			MatrixObject mo = (MatrixObject) _variablesDPOriginal.get( var );
 			ec.setVariable(var, mo); 
@@ -830,9 +844,9 @@ public class ParForProgramBlock extends ForProgramBlock
 		if( FORCE_CP_ON_REMOTE_SPARK && (_optMode == POptMode.NONE 
 			|| (_optMode == POptMode.CONSTRAINED && _execMode==PExecMode.REMOTE_SPARK)) ) {
 			//tid = 0  because replaced in remote parworker
-			flagForced = checkMRAndRecompileToCP(0); 
+			flagForced = checkSparkAndRecompileToCP(0);
 		}
-			
+		
 		// Step 1) init parallel workers (serialize PBs)
 		// NOTES: each mapper changes filenames with regard to his ID as we submit a single 
 		// job, cannot reuse serialized string, since variables are serialized as well.
@@ -854,13 +868,14 @@ public class ParForProgramBlock extends ForProgramBlock
 		if( _monitor )
 			StatisticMonitor.putPFStat(_ID, Stat.PARFOR_INIT_TASKS_T, time.stop());
 		
-		//write matrices to HDFS 
-		exportMatricesToHDFS(ec);
+		//handle broadcast / export of inputs
+		Set<String> brVars = getBroadcastVariables(ec, _resultVars);
+		exportMatricesToHDFS(ec, brVars);
 		
 		// Step 3) submit Spark parfor job (no lazy evaluation, since collect on result)
 		boolean topLevelPF = OptimizerUtils.isTopLevelParFor();
 		RemoteParForJobReturn ret = RemoteParForSpark.runJob(_ID, program,
-			clsMap, tasks, ec, _resultVars, _enableCPCaching, _numThreads, topLevelPF);
+			clsMap, tasks, ec, brVars, _resultVars, _enableCPCaching, _numThreads, topLevelPF);
 		
 		if( _monitor ) 
 			StatisticMonitor.putPFStat(_ID, Stat.PARFOR_WAIT_EXEC_T, time.stop());
@@ -890,7 +905,7 @@ public class ParForProgramBlock extends ForProgramBlock
 		Timing time = ( _monitor ? new Timing(true) : null );
 		
 		// Step 0) check and compile to CP (if forced remote parfor)
-		boolean flagForced = checkMRAndRecompileToCP(0);
+		boolean flagForced = checkSparkAndRecompileToCP(0);
 		
 		// Step 1) prepare partitioned input matrix (needs to happen before serializing the program)
 		ParForStatementBlock sb = (ParForStatementBlock) getStatementBlock();
@@ -918,7 +933,7 @@ public class ParForProgramBlock extends ForProgramBlock
 			StatisticMonitor.putPFStat(_ID, Stat.PARFOR_INIT_TASKS_T, time.stop());
 		
 		//write matrices to HDFS, except DP matrix which is the input to the RemoteDPParForSpark job
-		exportMatricesToHDFS(ec, _colocatedDPMatrix);
+		exportMatricesToHDFS(ec, CollectionUtils.asSet(_colocatedDPMatrix)); //incl colocated
 		
 		// Step 4) submit MR job (wait for finished work)
 		RemoteParForJobReturn ret = RemoteDPParForSpark.runJob(
@@ -1041,12 +1056,12 @@ public class ParForProgramBlock extends ForProgramBlock
 	 * @param out output matrix
 	 * @param in array of input matrix objects
 	 */
-	private static void cleanWorkerResultVariables(ExecutionContext ec, MatrixObject out, MatrixObject[] in) {
-		for( MatrixObject tmp : in ) {
-			//check for empty inputs (no iterations executed)
-			if( tmp != null && tmp != out )
-				ec.cleanupCacheableData(tmp);
-		}
+	private static void cleanWorkerResultVariables(ExecutionContext ec, MatrixObject out, MatrixObject[] in, boolean parallel) {
+		//check for empty inputs (no iterations executed)
+		Stream<MatrixObject> results = Arrays.stream(in).filter(m -> m!=null && m!=out);
+		//perform cleanup (parallel to mitigate file deletion bottlenecks)
+		(parallel ? results.parallel() : results)
+			.forEach(m -> ec.cleanupCacheableData(m));
 	}
 	
 	/**
@@ -1103,11 +1118,24 @@ public class ParForProgramBlock extends ForProgramBlock
 					out.put(var, dataObj);
 			}
 	}
+	
+	private static Set<String> getBroadcastVariables(ExecutionContext ec, List<ResultVar> resultVars) {
+		if( !ALLOW_BROADCAST_INPUTS )
+			return new HashSet<>();
+		LocalVariableMap inputs = ec.getVariables();
+		// exclude the result variables
+		Set<String> retVars = resultVars.stream()
+			.map(v -> v._name).collect(Collectors.toSet());
+		Set<String> brVars = inputs.keySet().stream()
+			.filter(v -> !retVars.contains(v))
+			.filter(v -> ec.getVariable(v).getDataType().isMatrix())
+			.filter(v -> OptimizerUtils.estimateSize(ec.getDataCharacteristics(v))< 2.14e9)
+			.collect(Collectors.toSet());
+		return brVars;
+	}
 
-	private void exportMatricesToHDFS(ExecutionContext ec, String... blacklistNames) 
-	{
+	private void exportMatricesToHDFS(ExecutionContext ec, Set<String> excludeNames)  {
 		ParForStatementBlock sb = (ParForStatementBlock)getStatementBlock();
-		Set<String> blacklist = UtilFunctions.asSet(blacklistNames);
 		
 		if( LIVEVAR_AWARE_EXPORT && sb != null)
 		{
@@ -1115,21 +1143,20 @@ public class ParForProgramBlock extends ForProgramBlock
 			//export only variables that are read in the body
 			VariableSet varsRead = sb.variablesRead();
 			for (String key : ec.getVariables().keySet() ) {
-				if( varsRead.containsVariable(key) && !blacklist.contains(key) ) {
+				if( varsRead.containsVariable(key) && !excludeNames.contains(key) ) {
 					Data d = ec.getVariable(key);
-					if( d.getDataType() == DataType.MATRIX )
-						((MatrixObject)d).exportData(_replicationExport);
+					if( d.getDataType().isMatrixOrFrame() )
+						((CacheableData<?>)d).exportData(_replicationExport);
 				}
 			}
 		}
-		else
-		{
+		else {
 			//export all matrices in symbol table
 			for (String key : ec.getVariables().keySet() ) {
-				if( !blacklist.contains(key) ) {
+				if( !excludeNames.contains(key) ) {
 					Data d = ec.getVariable(key);
-					if( d.getDataType() == DataType.MATRIX )
-						((MatrixObject)d).exportData(_replicationExport);
+					if( d.getDataType().isMatrixOrFrame() )
+						((CacheableData<?>)d).exportData(_replicationExport);
 				}
 			}
 		}
@@ -1176,6 +1203,7 @@ public class ParForProgramBlock extends ForProgramBlock
 			
 			//deep copy execution context (including prepare parfor update-in-place)
 			ExecutionContext cpEc = ProgramConverter.createDeepCopyExecutionContext(ec);
+			cpEc.setTID(pwID);
 
 			// If GPU mode is enabled, gets a GPUContext from the pool of GPUContexts
 			// and sets it in the ExecutionContext of the parfor
@@ -1318,10 +1346,10 @@ public class ParForProgramBlock extends ForProgramBlock
 	 * @param tid thread id
 	 * @return true if recompile was necessary and possible
 	 */
-	private boolean checkMRAndRecompileToCP(long tid) 
+	private boolean checkSparkAndRecompileToCP(long tid) 
 	{
-		//no MR instructions, ok
-		if( !OptTreeConverter.rContainsMRJobInstruction(this, true) )
+		//no Spark instructions, ok
+		if( !OptTreeConverter.rContainsSparkInstruction(this, true) )
 			return false;
 		
 		//no statement block, failed
@@ -1331,7 +1359,7 @@ public class ParForProgramBlock extends ForProgramBlock
 			return false;
 		}
 		
-		//try recompile MR instructions to CP
+		//try recompile Spark instructions to CP
 		HashSet<String> fnStack = new HashSet<>();
 		Recompiler.recompileProgramBlockHierarchy2Forced(_childBlocks, tid, fnStack, ExecType.CP);
 		return true;
@@ -1426,7 +1454,7 @@ public class ParForProgramBlock extends ForProgramBlock
 						ec.cleanupDataObject(exdata);
 					
 					//cleanup of intermediate result variables
-					cleanWorkerResultVariables( ec, out, in );
+					cleanWorkerResultVariables( ec, out, in, true );
 					
 					//set merged result variable
 					ec.setVariable(var._name, outNew);
@@ -1511,10 +1539,6 @@ public class ParForProgramBlock extends ForProgramBlock
 			if( _monitor ) 
 				StatisticMonitor.putPfPwMapping(_ID, _pwIDs[i]);
 		}
-	}
-
-	private static long computeNumIterations( IntObject from, IntObject to, IntObject incr ) {
-		return (long)Math.ceil(((double)(to.getLongValue() - from.getLongValue() + 1)) / incr.getLongValue()); 
 	}
 	
 	/**
@@ -1651,13 +1675,12 @@ public class ParForProgramBlock extends ForProgramBlock
 					}
 		
 					//cleanup of intermediate result variables
-					cleanWorkerResultVariables( _ec, out, in );
+					cleanWorkerResultVariables( _ec, out, in, false );
 				}
 				
 				_success = true;
 			}
-			catch(Exception ex)
-			{
+			catch(Exception ex) {
 				LOG.error("Error executing result merge: ", ex);
 			}
 		}

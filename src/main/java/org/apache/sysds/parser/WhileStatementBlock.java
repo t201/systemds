@@ -21,6 +21,7 @@ package org.apache.sysds.parser;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 
 import org.apache.sysds.conf.ConfigurationManager;
 import org.apache.sysds.hops.Hop;
@@ -253,6 +254,18 @@ public class WhileStatementBlock extends StatementBlock
 
 	public void setPredicateLops(Lop predicateLops) {
 		_predicateLops = predicateLops;
+	}
+	
+	public ArrayList<String> getInputstoSB() {
+		// By calling getInputstoSB on all the child statement blocks,
+		// we remove the variables only read in the while predicate but
+		// never used in the body from the input list.
+		HashSet<String> inputs = new HashSet<>();
+		WhileStatement fstmt = (WhileStatement)_statements.get(0);
+		for (StatementBlock sb : fstmt.getBody())
+			inputs.addAll(sb.getInputstoSB());
+		// Hashset ensures no duplicates in the variable list
+		return new ArrayList<>(inputs);
 	}
 	
 	@Override

@@ -20,14 +20,9 @@
 package org.apache.sysds.runtime.util;
 
 import org.apache.commons.lang.ArrayUtils;
-import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.math3.random.RandomDataGenerator;
 import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.runtime.DMLRuntimeException;
-import org.apache.sysds.runtime.controlprogram.federated.FederatedData;
-import org.apache.sysds.runtime.controlprogram.federated.FederatedRange;
-import org.apache.sysds.runtime.controlprogram.federated.FederatedRequest;
-import org.apache.sysds.runtime.controlprogram.federated.FederatedResponse;
 import org.apache.sysds.runtime.data.SparseBlock;
 import org.apache.sysds.runtime.data.TensorIndexes;
 import org.apache.sysds.runtime.instructions.spark.data.IndexedMatrixValue;
@@ -36,20 +31,23 @@ import org.apache.sysds.runtime.matrix.data.MatrixIndexes;
 import org.apache.sysds.runtime.matrix.data.Pair;
 import org.apache.sysds.runtime.meta.TensorCharacteristics;
 
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.BitSet;
-import java.util.HashSet;
-import java.util.Iterator;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
-import java.util.concurrent.Future;
-import java.util.stream.Stream;
-import java.util.stream.StreamSupport;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
-public class UtilFunctions 
-{
+public class UtilFunctions {
+	// private static final Log LOG = LogFactory.getLog(UtilFunctions.class.getName());
+
 	//for accurate cast of double values to int and long 
 	//IEEE754: binary64 (double precision) eps = 2^(-53) = 1.11 * 10^(-16)
 	//(same epsilon as used for matrix index cast in R)
@@ -59,9 +57,17 @@ public class UtilFunctions
 	//because it determines the max hash domain size
 	public static final long ADD_PRIME1 = 99991;
 	public static final int DIVIDE_PRIME = 1405695061; 
-	
+
 	public static int intHashCode(int key1, int key2) {
 		return 31 * (31 + key1) + key2;
+	}
+	
+	public static int intHashCodeRobust(int key1, int key2) {
+		// handle overflows to avoid systematic hash code repetitions
+		// in long recursive hash computations w/ repeated structure
+		long tmp = 31L * (31L + key1) + key2;
+		return (tmp < Integer.MAX_VALUE) ?
+			(int) tmp : longHashCode(tmp);
 	}
 	
 	public static int longHashCode(long key1) {
@@ -103,7 +109,7 @@ public class UtilFunctions
 	public static int nextIntPow2( int in ) {
 		int expon = (in==0) ? 0 : 32-Integer.numberOfLeadingZeros(in-1);
 		long pow2 = pow(2, expon);
-		return (int)((pow2>Integer.MAX_VALUE)?Integer.MAX_VALUE : pow2);	
+		return (int)((pow2>Integer.MAX_VALUE)?Integer.MAX_VALUE : pow2);
 	}
 	
 	public static long pow(int base, int exp) {
@@ -348,11 +354,12 @@ public class UtilFunctions
 	 * environments because Double.parseDouble relied on a synchronized cache
 	 * (which was replaced with thread-local caches in JDK8).
 	 * 
-	 * @param str string to parse to double
+	 * @param str   string to parse to double
+	 * @param isNan collection of Nan string which if encountered should be parsed to nan value
 	 * @return double value
 	 */
-	public static double parseToDouble(String str) {
-		return "NA".equals(str) ?
+	public static double parseToDouble(String str, Set<String> isNan ) {
+		return isNan != null && isNan.contains(str) ?
 			Double.NaN :
 			Double.parseDouble(str);
 	}
@@ -402,9 +409,12 @@ public class UtilFunctions
 		//a very small increment. Hence, we use a different formulation 
 		//that exhibits better numerical stability by avoiding the subtraction
 		//of numbers of different magnitude.
-		if( check && (Double.isNaN(from) || Double.isNaN(to) || Double.isNaN(incr) 
+		if( (isSpecial(from) || isSpecial(to) || isSpecial(incr) 
 			|| (from > to && incr > 0) || (from < to && incr < 0)) ) {
-			throw new RuntimeException("Invalid seq parameters: ("+from+", "+to+", "+incr+")");
+			if( check )
+				throw new RuntimeException("Invalid seq parameters: ("+from+", "+to+", "+incr+")");
+			else
+				return 0; // invalid loop configuration
 		}
 		return 1L + (long) Math.floor(to/incr - from/incr);
 	}
@@ -451,7 +461,7 @@ public class UtilFunctions
 	}
 
 	public static Object doubleToObject(ValueType vt, double in, boolean sparse) {
-		if( in == 0 && sparse) return null;
+		if( Double.isNaN(in) && sparse) return null;
 		switch( vt ) {
 			case STRING:  return String.valueOf(in);
 			case BOOLEAN: return (in!=0);
@@ -477,7 +487,7 @@ public class UtilFunctions
 	}
 
 	public static double objectToDouble(ValueType vt, Object in) {
-		if( in == null )  return 0;
+		if( in == null )  return Double.NaN;
 		switch( vt ) {
 			case FP64:    return (Double)in;
 			case FP32:    return (Float)in;
@@ -587,6 +597,10 @@ public class UtilFunctions
 		return true;
 	}
 	
+	public static boolean isSpecial(double value) {
+		return Double.isNaN(value) || Double.isInfinite(value);
+	}
+	
 	public static int[] getSortedSampleIndexes(int range, int sampleSize) {
 		return getSortedSampleIndexes(range, sampleSize, -1);
 	}
@@ -619,6 +633,16 @@ public class UtilFunctions
 	
 	public static String quote(String s) {
 		return "\"" + s + "\"";
+	}
+
+	public static int getAsciiAtIdx(String s, int idx) {
+		int strlen = s.length();
+		int c = 0;
+		int javaIdx = idx - 1;
+		if (javaIdx >= 0 && javaIdx < strlen) {
+			c = (int)s.charAt(javaIdx);
+		}
+		return c;
 	}
 
 	/**
@@ -752,44 +776,6 @@ public class UtilFunctions
 		return false;
 	}
 	
-	@SafeVarargs
-	public static <T> List<T> asList(List<T>... inputs) {
-		List<T> ret = new ArrayList<>();
-		for( List<T> list : inputs )
-			ret.addAll(list);
-		return ret;
-	}
-	
-	@SafeVarargs
-	public static <T> Set<T> asSet(List<T>... inputs) {
-		Set<T> ret = new HashSet<>();
-		for( List<T> list : inputs )
-			ret.addAll(list);
-		return ret;
-	}
-	
-	@SafeVarargs
-	public static <T> Set<T> asSet(T[]... inputs) {
-		Set<T> ret = new HashSet<>();
-		for( T[] input : inputs )
-			for( T element : input )
-				ret.add(element);
-		return ret;
-	}
-	
-	@SafeVarargs
-	public static <T> Set<T> asSet(T... inputs) {
-		Set<T> ret = new HashSet<>();
-		for( T element : inputs )
-			ret.add(element);
-		return ret;
-	}
-	
-	public static <T> Stream<T> getStream(Iterator<T> iter) {
-		Iterable<T> iterable = () -> iter;
-		return StreamSupport.stream(iterable.spliterator(), false);
-	}
-
 	public static long prod(long[] arr) {
 		long ret = 1;
 		for(int i=0; i<arr.length; i++)
@@ -827,22 +813,181 @@ public class UtilFunctions
 		}
 	}
 	
-	public static List<org.apache.commons.lang3.tuple.Pair<FederatedRange, Future<FederatedResponse>>> requestFederatedData(
-		Map<FederatedRange, FederatedData> fedMapping) {
-		List<org.apache.commons.lang3.tuple.Pair<FederatedRange, Future<FederatedResponse>>> readResponses = new ArrayList<>();
-		for(Map.Entry<FederatedRange, FederatedData> entry : fedMapping.entrySet()) {
-			FederatedRange range = entry.getKey();
-			FederatedData fd = entry.getValue();
+	private static final Map<String, String> DATE_FORMATS = new HashMap<String, String>() {
+		private static final long serialVersionUID = 6826162458614520846L; {
+		put("^\\d{4}-\\d{1,2}-\\d{1,2}\\s\\d{1,2}:\\d{2}:\\d{2}$", "yyyy-MM-dd HH:mm:ss");
+		put("^\\d{1,2}-\\d{1,2}-\\d{4}\\s\\d{1,2}:\\d{2}:\\d{2}$", "dd-MM-yyyy HH:mm:ss");
+		put("^\\d{1,2}/\\d{1,2}/\\d{4}\\s\\d{1,2}:\\d{2}:\\d{2}$", "MM/dd/yyyy HH:mm:ss");
+		put("^\\d{4}/\\d{1,2}/\\d{1,2}\\s\\d{1,2}:\\d{2}:\\d{2}$", "yyyy/MM/dd HH:mm:ss");
+		put("^\\d{1,2}\\s[a-z]{3}\\s\\d{4}\\s\\d{1,2}:\\d{2}:\\d{2}$", "dd MMM yyyy HH:mm:ss");
+		put("^\\d{1,2}\\s[a-z]{4,}\\s\\d{4}\\s\\d{1,2}:\\d{2}:\\d{2}$", "dd MMMM yyyy HH:mm:ss");
+		put("^\\d{8}$", "yyyyMMdd");
+		put("^\\d{1,2}-\\d{1,2}-\\d{4}$", "dd-MM-yyyy");
+		put("^\\d{4}-\\d{1,2}-\\d{1,2}$", "yyyy-MM-dd");
+		put("^\\d{1,2}/\\d{1,2}/\\d{4}$", "MM/dd/yyyy");
+		put("^\\d{4}/\\d{1,2}/\\d{1,2}$", "yyyy/MM/dd");
+		put("^\\d{1,2}\\s[a-z]{3}\\s\\d{4}$", "dd MMM yyyy");
+		put("^\\d{1,2}\\s[a-z]{4,}\\s\\d{4}$", "dd MMMM yyyy");
+		put("^\\d{12}$", "yyyyMMddHHmm");
+		put("^\\d{8}\\s\\d{4}$", "yyyyMMdd HHmm");
+		put("^\\d{1,2}-\\d{1,2}-\\d{4}\\s\\d{1,2}:\\d{2}$", "dd-MM-yyyy HH:mm");
+		put("^\\d{4}-\\d{1,2}-\\d{1,2}\\s\\d{1,2}:\\d{2}$", "yyyy-MM-dd HH:mm");
+		put("^\\d{1,2}/\\d{1,2}/\\d{4}\\s\\d{1,2}:\\d{2}$", "MM/dd/yyyy HH:mm");
+		put("^\\d{4}/\\d{1,2}/\\d{1,2}\\s\\d{1,2}:\\d{2}$", "yyyy/MM/dd HH:mm");
+		put("^\\d{1,2}\\s[a-z]{3}\\s\\d{4}\\s\\d{1,2}:\\d{2}$", "dd MMM yyyy HH:mm");
+		put("^\\d{1,2}\\s[a-z]{4,}\\s\\d{4}\\s\\d{1,2}:\\d{2}$", "dd MMMM yyyy HH:mm");
+		put("^\\d{14}$", "yyyyMMddHHmmss");
+		put("^\\d{8}\\s\\d{6}$", "yyyyMMdd HHmmss");
+	}};
 
-			if(fd.isInitialized()) {
-				FederatedRequest request = new FederatedRequest(FederatedRequest.FedMethod.TRANSFER);
-				Future<FederatedResponse> readResponse = fd.executeFederatedOperation(request, true);
-				readResponses.add(new ImmutablePair<>(range, readResponse));
-			}
-			else {
-				throw new DMLRuntimeException("Federated matrix read only supported on initialized FederatedData");
-			}
+	public static long toMillis (String dateString) {
+		long value = 0;
+		try {
+			value = new SimpleDateFormat(getDateFormat(dateString)).parse(dateString).getTime();
 		}
-		return readResponses;
+		catch(ParseException e) {
+			throw new DMLRuntimeException(e);
+		}
+		return value ;
 	}
+
+	private static String getDateFormat (String dateString) {
+		return DATE_FORMATS.keySet().parallelStream().filter(e -> dateString.toLowerCase().matches(e)).findFirst()
+			.map(DATE_FORMATS::get).orElseThrow(() -> new NullPointerException("Unknown date format."));
+	}
+
+	public static String[] getSplittedStringAsArray (String input) {
+		//Frame f = new Frame();
+		String[] string_array = input.split("'[ ]*,[ ]*'");
+		return string_array;//.subList(0,2);
+	}
+	
+	public static double jaccardSim(String x, String y) {
+		Set<String> charsX = new LinkedHashSet<>(Arrays.asList(x.split("(?!^)")));
+		Set<String> charsY = new LinkedHashSet<>(Arrays.asList(y.split("(?!^)")));
+	
+		final int sa = charsX.size();
+		final int sb = charsY.size();
+		charsX.retainAll(charsY);
+		final int intersection = charsX.size();
+		return 1d / (sa + sb - charsX.size()) * intersection;
+	}
+	
+	public static String columnStringToCSVString(String input, String separator) {
+		StringBuffer sb = new StringBuffer(input);
+		StringBuilder outStringBuilder = new StringBuilder();
+		String[] string_array;
+		
+		// remove leading and trailing brackets: []
+		int startOfArray = sb.indexOf("\"[");
+		if (startOfArray >=0)
+		  sb.delete(startOfArray, startOfArray + 2);
+		
+		
+		int endOfArray = sb.lastIndexOf("]\"");
+		if (endOfArray >=0) 
+		  sb.delete(endOfArray, endOfArray + 2);
+		
+	
+		// split values depending on their format
+		if (sb.indexOf("'") != -1) { // string contains strings
+		  // replace "None" with "'None'"
+		  Pattern p = Pattern.compile(", None,");
+		  Matcher m = p.matcher(sb);
+		  string_array = m.replaceAll(", 'None',").split("'[ ]*,[ ]*'");
+		
+		  // remove apostrophe in first and last string element
+		  string_array[0] = string_array[0].replaceFirst("'", "");
+		  int lastArrayIndex = string_array.length - 1;
+		  string_array[lastArrayIndex] = string_array[lastArrayIndex]
+				.substring(0, string_array[lastArrayIndex].length() - 1);
+		} 
+		else  // string contains numbers only
+		  string_array = sb.toString().split(",");
+	
+		// select a suitable separator that can be used to read in the file properly
+		for(String s : string_array) 
+			outStringBuilder.append(s).append(separator);
+		
+		outStringBuilder.delete(outStringBuilder.length() - separator.length(), outStringBuilder.length());
+		return outStringBuilder.toString();
+	}
+	
+	/**
+	 * Generates a random FrameBlock with given parameters.
+	 * 
+	 * @param rows   frame rows
+	 * @param cols   frame cols
+	 * @param schema frame schema
+	 * @param random random number generator
+	 * @return FrameBlock
+	 */
+	public static FrameBlock generateRandomFrameBlock(int rows, int cols, ValueType[] schema, Random random) {
+		String[] names = new String[cols];
+		for(int i = 0; i < cols; i++)
+			names[i] = schema[i].toString();
+		FrameBlock frameBlock = new FrameBlock(schema, names);
+		frameBlock.ensureAllocatedColumns(rows);
+		for(int row = 0; row < rows; row++)
+			for(int col = 0; col < cols; col++)
+				frameBlock.set(row, col, generateRandomValueFromValueType(schema[col], random));
+		return frameBlock;
+	}
+
+	/**
+	 * Generates a random value for a given Value Type
+	 * 
+	 * @param valueType the ValueType of which to generate the value
+	 * @param random random number generator
+	 * @return Object
+	 */
+	public static Object generateRandomValueFromValueType(ValueType valueType, Random random) {
+		switch (valueType){
+			case FP32:    return random.nextFloat();
+			case FP64:    return random.nextDouble();
+			case INT32:   return random.nextInt();
+			case INT64:   return random.nextLong();
+			case BOOLEAN: return random.nextBoolean();
+			case STRING:
+				return random.ints('a', 'z' + 1).limit(10)
+					.collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append)
+					.toString();
+			default:
+				return null;
+		}
+	}
+	
+	/**
+	 * Generates a ValueType array from a String array
+	 * 
+	 * @param schemaValues the string schema of which to generate the ValueType
+	 * @return ValueType[]
+	 */
+	public static ValueType[] stringToValueType(String[] schemaValues) {
+		ValueType[] vt = new ValueType[schemaValues.length];
+		for(int i=0; i < schemaValues.length; i++) {
+			if(schemaValues[i].equalsIgnoreCase("STRING"))
+				vt[i] = ValueType.STRING;
+			else if (schemaValues[i].equalsIgnoreCase("FP64"))
+				vt[i] = ValueType.FP64;
+			else if (schemaValues[i].equalsIgnoreCase("FP32"))
+				vt[i] = ValueType.FP32;
+			else if (schemaValues[i].equalsIgnoreCase("INT64"))
+				vt[i] = ValueType.INT64;
+			else if (schemaValues[i].equalsIgnoreCase("INT32"))
+				vt[i] = ValueType.INT32;
+			else if (schemaValues[i].equalsIgnoreCase("BOOLEAN"))
+				vt[i] = ValueType.BOOLEAN;
+			else
+				throw new DMLRuntimeException("Invalid column schema. Allowed values are STRING, FP64, FP32, INT64, INT32 and Boolean");
+		}
+		return vt;
+	}
+
+
+	public static int getEndIndex(int arrayLength, int startIndex, int blockSize){
+		return (blockSize <= 0)? arrayLength: Math.min(arrayLength, startIndex + blockSize);
+	}
+
+
 }

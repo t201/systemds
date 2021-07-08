@@ -107,6 +107,7 @@ public class AppendVectorTest extends AutomatedTestBase
 			
 			boolean exceptionExpected = false;
 			int numExpectedJobs = (platform == ExecMode.SINGLE_NODE) ? 0 : 6;
+			
 			runTest(true, exceptionExpected, null, numExpectedJobs);
 			Assert.assertEquals("Wrong number of executed Spark jobs.",
 				numExpectedJobs, Statistics.getNoOfExecutedSPInst());
@@ -114,8 +115,8 @@ public class AppendVectorTest extends AutomatedTestBase
 			runRScript(true);
 			
 			for(String file: config.getOutputFiles()) {
-				HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS(file);
-				HashMap<CellIndex, Double> rfile = readRMatrixFromFS(file);
+				HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir(file);
+				HashMap<CellIndex, Double> rfile = readRMatrixFromExpectedDir(file);
 				TestUtils.compareMatrices(dmlfile, rfile, epsilon, file+"-DML", file+"-R");
 			}
 		}

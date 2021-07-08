@@ -22,8 +22,6 @@ package org.apache.sysds.runtime.controlprogram.context;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
-import org.apache.log4j.Level;
-import org.apache.log4j.Logger;
 import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaSparkContext;
@@ -94,7 +92,6 @@ import java.util.stream.LongStream;
 
 public class SparkExecutionContext extends ExecutionContext
 {
-	private static final boolean LDEBUG = false; //local debug flag
 
 	//internal configurations
 	private static final boolean LAZY_SPARKCTX_CREATION = true;
@@ -117,14 +114,6 @@ public class SparkExecutionContext extends ExecutionContext
 	private static boolean[] _poolBuff = FAIR_SCHEDULER_MODE ?
 		new boolean[InfrastructureAnalyzer.getLocalParallelism()] : null;
 	
-	static {
-		// for internal debugging only
-		if( LDEBUG ) {
-			Logger.getLogger("org.apache.sysds.runtime.controlprogram.context")
-				.setLevel(Level.DEBUG);
-		}
-	}
-
 	protected SparkExecutionContext(boolean allocateVars, boolean allocateLineage, Program prog) {
 		//protected constructor to force use of ExecutionContextFactory
 		super( allocateVars, allocateLineage, prog );
@@ -171,18 +160,14 @@ public class SparkExecutionContext extends ExecutionContext
 		_spctx = null;
 	}
 
-	public void close()
-	{
+	public void close() {
 		synchronized( SparkExecutionContext.class ) {
-			if( _spctx != null )
-			{
+			if( _spctx != null ) {
 				//stop the spark context if existing
 				_spctx.stop();
-
 				//make sure stopped context is never used again
 				_spctx = null;
 			}
-
 		}
 	}
 
@@ -385,14 +370,14 @@ public class SparkExecutionContext extends ExecutionContext
 			rdd = mo.getRDDHandle().getRDD();
 		}
 		//CASE 2: dirty in memory data or cached result of rdd operations
-		else if( mo.isDirty() || mo.isCached(false) )
+		else if( mo.isDirty() || mo.isCached(false) || mo.isFederated() )
 		{
 			//get in-memory matrix block and parallelize it
 			//w/ guarded parallelize (fallback to export, rdd from file if too large)
 			DataCharacteristics dc = mo.getDataCharacteristics();
 			boolean fromFile = false;
-			if( !OptimizerUtils.checkSparkCollectMemoryBudget(dc, 0) || !_parRDDs.reserve(
-					OptimizerUtils.estimatePartitionedSizeExactSparsity(dc))) {
+			if( !mo.isFederated() && (!OptimizerUtils.checkSparkCollectMemoryBudget(dc, 0)
+				|| !_parRDDs.reserve(OptimizerUtils.estimatePartitionedSizeExactSparsity(dc)))) {
 				if( mo.isDirty() || !mo.isHDFSFileExists() ) //write if necessary
 					mo.exportData();
 				rdd = sc.hadoopFile( mo.getFileName(), inputInfo.inputFormatClass, inputInfo.keyClass, inputInfo.valueClass);
@@ -609,7 +594,7 @@ public class SparkExecutionContext extends ExecutionContext
 			//create new broadcast handle (never created, evicted)
 			// account for overwritten invalid broadcast (e.g., evicted)
 			if (cd.getBroadcastHandle() != null)
-				CacheableData.addBroadcastSize(-cd.getBroadcastHandle().getNonPartitionedBroadcastSize());
+				CacheableData.addBroadcastSize(-cd.getBroadcastHandle().getSize());
 
 			// read the matrix block
 			CacheBlock cb = cd.acquireRead();
@@ -624,7 +609,7 @@ public class SparkExecutionContext extends ExecutionContext
 				}
 				cd.getBroadcastHandle().setNonPartitionedBroadcast(brBlock,
 					OptimizerUtils.estimateSize(cd.getDataCharacteristics()));
-				CacheableData.addBroadcastSize(cd.getBroadcastHandle().getNonPartitionedBroadcastSize());
+				CacheableData.addBroadcastSize(cd.getBroadcastHandle().getSize());
 
 				if (DMLScript.STATISTICS) {
 					Statistics.accSparkBroadCastTime(System.nanoTime() - t0);
@@ -658,7 +643,7 @@ public class SparkExecutionContext extends ExecutionContext
 		if (bret == null) {
 			//account for overwritten invalid broadcast (e.g., evicted)
 			if (mo.getBroadcastHandle() != null)
-				CacheableData.addBroadcastSize(-mo.getBroadcastHandle().getPartitionedBroadcastSize());
+				CacheableData.addBroadcastSize(-mo.getBroadcastHandle().getSize());
 
 			//obtain meta data for matrix
 			int blen = (int) mo.getBlocksize();
@@ -689,7 +674,7 @@ public class SparkExecutionContext extends ExecutionContext
 			}
 			mo.getBroadcastHandle().setPartitionedBroadcast(bret,
 				OptimizerUtils.estimatePartitionedSizeExactSparsity(mo.getDataCharacteristics()));
-			CacheableData.addBroadcastSize(mo.getBroadcastHandle().getPartitionedBroadcastSize());
+			CacheableData.addBroadcastSize(mo.getBroadcastHandle().getSize());
 		}
 
 		if (DMLScript.STATISTICS) {
@@ -715,7 +700,7 @@ public class SparkExecutionContext extends ExecutionContext
 		if (bret == null) {
 			//account for overwritten invalid broadcast (e.g., evicted)
 			if (to.getBroadcastHandle() != null)
-				CacheableData.addBroadcastSize(-to.getBroadcastHandle().getPartitionedBroadcastSize());
+				CacheableData.addBroadcastSize(-to.getBroadcastHandle().getSize());
 
 			//obtain meta data for matrix
 			DataCharacteristics dc = to.getDataCharacteristics();
@@ -746,7 +731,7 @@ public class SparkExecutionContext extends ExecutionContext
 			}
 			to.getBroadcastHandle().setPartitionedBroadcast(bret,
 					OptimizerUtils.estimatePartitionedSizeExactSparsity(to.getDataCharacteristics()));
-			CacheableData.addBroadcastSize(to.getBroadcastHandle().getPartitionedBroadcastSize());
+			CacheableData.addBroadcastSize(to.getBroadcastHandle().getSize());
 		}
 
 		if (DMLScript.STATISTICS) {
@@ -782,7 +767,7 @@ public class SparkExecutionContext extends ExecutionContext
 		if (bret == null) {
 			//account for overwritten invalid broadcast (e.g., evicted)
 			if (fo.getBroadcastHandle() != null)
-				CacheableData.addBroadcastSize(-fo.getBroadcastHandle().getPartitionedBroadcastSize());
+				CacheableData.addBroadcastSize(-fo.getBroadcastHandle().getSize());
 
 			//obtain meta data for frame
 			int blen = OptimizerUtils.getDefaultFrameSize();
@@ -813,7 +798,7 @@ public class SparkExecutionContext extends ExecutionContext
 			
 			fo.getBroadcastHandle().setPartitionedBroadcast(bret,
 				OptimizerUtils.estimatePartitionedSizeExactSparsity(fo.getDataCharacteristics()));
-			CacheableData.addBroadcastSize(fo.getBroadcastHandle().getPartitionedBroadcastSize());
+			CacheableData.addBroadcastSize(fo.getBroadcastHandle().getSize());
 		}
 
 		if (DMLScript.STATISTICS) {
@@ -1071,8 +1056,9 @@ public class SparkExecutionContext extends ExecutionContext
 				int cols = block.getNumColumns();
 				
 				//handle compressed blocks (decompress for robustness)
-				if( block instanceof CompressedMatrixBlock )
-					block = ((CompressedMatrixBlock)block).decompress();
+				if( block instanceof CompressedMatrixBlock ){
+					block = ((CompressedMatrixBlock)block).decompress(InfrastructureAnalyzer.getLocalParallelism());
+				}
 
 				//append block
 				if( sparse ) { //SPARSE OUTPUT
@@ -1365,7 +1351,7 @@ public class SparkExecutionContext extends ExecutionContext
 			//compute ref count only if matrix cleanup actually necessary
 			if( !getVariables().hasReferences(mo) ) {
 				//clean cached data
-				mo.clearData();
+				mo.clearData(getTID());
 
 				//clean hdfs data if no pending rdd operations on it
 				if( mo.isHDFSFileExists() && mo.getFileName()!=null ) {
@@ -1432,7 +1418,7 @@ public class SparkExecutionContext extends ExecutionContext
 				if( bc != null ) //robustness evictions
 					cleanupBroadcastVariable(bc);
 			}
-			CacheableData.addBroadcastSize(-bob.getNonPartitionedBroadcastSize());
+			CacheableData.addBroadcastSize(-bob.getSize());
 		}
 
 		//recursively process lineage children
@@ -1486,6 +1472,10 @@ public class SparkExecutionContext extends ExecutionContext
 		JavaPairRDD<MatrixIndexes,MatrixBlock> in = (JavaPairRDD<MatrixIndexes, MatrixBlock>)
 			getRDDHandleForMatrixObject(mo, FileFormat.BINARY);
 
+		//avoid unnecessary repartitioning/caching if data already partitioned
+		if( SparkUtils.isHashPartitioned(in) )
+			return;
+		
 		//avoid unnecessary caching of input in order to reduce memory pressure
 		if( mo.getRDDHandle().allowsShortCircuitRead()
 			&& isRDDMarkedForCaching(in.id()) && !isRDDCached(in.id()) ) {
@@ -1786,6 +1776,12 @@ public class SparkExecutionContext extends ExecutionContext
 				_defaultPar = (defaultPar>1) ? defaultPar : numExecutors * numCoresPerExec;
 				_confOnly &= true;
 			}
+			else if( DMLScript.USE_LOCAL_SPARK_CONFIG ) {
+				//avoid unnecessary spark context creation in local mode (e.g., tests)
+				_numExecutors = 1;
+				_defaultPar = 2;
+				_confOnly &= true;
+			}
 			else {
 				//get default parallelism (total number of executors and cores)
 				//note: spark context provides this information while conf does not
@@ -1856,8 +1852,8 @@ public class SparkExecutionContext extends ExecutionContext
 		}
 
 		public synchronized void deregisterRDD(int rddID) {
-			long rddSize = _rdds.remove(rddID);
-			_size -= rddSize;
+			Long rddSize = _rdds.remove(rddID);
+			_size -= (rddSize!=null) ? rddSize : 0;
 		}
 
 		public synchronized void clear() {

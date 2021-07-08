@@ -21,27 +21,38 @@ package org.apache.sysds.runtime.instructions.cp;
 
 import org.apache.sysds.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysds.runtime.matrix.data.FrameBlock;
+import org.apache.sysds.runtime.matrix.operators.BinaryOperator;
 import org.apache.sysds.runtime.matrix.operators.Operator;
 
 public class BinaryFrameFrameCPInstruction extends BinaryCPInstruction
 {
 	protected BinaryFrameFrameCPInstruction(Operator op, CPOperand in1,
-		CPOperand in2, CPOperand out, String opcode, String istr) {
+			CPOperand in2, CPOperand out, String opcode, String istr) {
 		super(CPType.Binary, op, in1, in2, out, opcode, istr);
 	}
 
 	@Override
 	public void processInstruction(ExecutionContext ec) {
-		// Read input matrices
+		// get input frames
 		FrameBlock inBlock1 = ec.getFrameInput(input1.getName());
 		FrameBlock inBlock2 = ec.getFrameInput(input2.getName());
-
-		// Perform computation using input frames, and produce the result frame
-		FrameBlock retBlock = inBlock1.dropInvalid(inBlock2);
+		
+		if(getOpcode().equals("dropInvalidType")) {
+			// Perform computation using input frames, and produce the result frame
+			FrameBlock retBlock = inBlock1.dropInvalidType(inBlock2);
+			// Attach result frame with FrameBlock associated with output_name
+			ec.setFrameOutput(output.getName(), retBlock);
+		}
+		else {
+			// Execute binary operations
+			BinaryOperator dop = (BinaryOperator) _optr;
+			FrameBlock outBlock = inBlock1.binaryOperations(dop, inBlock2, null);
+			// Attach result frame with FrameBlock associated with output_name
+			ec.setFrameOutput(output.getName(), outBlock);
+		}
+		
 		// Release the memory occupied by input frames
 		ec.releaseFrameInput(input1.getName());
 		ec.releaseFrameInput(input2.getName());
-		// Attach result frame with FrameBlock associated with output_name
-		ec.setFrameOutput(output.getName(), retBlock);
 	}
 }

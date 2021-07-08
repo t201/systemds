@@ -21,21 +21,17 @@ package org.apache.sysds.test.functions.misc;
 
 import java.util.HashMap;
 
-import org.junit.Assert;
-import org.junit.Test;
-import org.apache.sysds.api.DMLException;
 import org.apache.sysds.common.Types.ValueType;
+import org.apache.sysds.parser.LanguageException;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.runtime.util.HDFSTool;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
+import org.junit.Assert;
+import org.junit.Test;
 
-/**
- *   
- */
 public class DataTypeCastingTest extends AutomatedTestBase
 {
-	
 	private final static String TEST_DIR = "functions/misc/";
 	private final static String TEST_CLASS_DIR = TEST_DIR + DataTypeCastingTest.class.getSimpleName() + "/";
 	
@@ -52,31 +48,31 @@ public class DataTypeCastingTest extends AutomatedTestBase
 	@Test
 	public void testMatrixToScalar() 
 	{ 
-		runTest( TEST_NAME1, true, false ); 
+		runTest( TEST_NAME1, true, null ); 
 	}
 	
 	@Test
 	public void testMatrixToScalarWrongSize() 
 	{ 
-		runTest( TEST_NAME1, true, true ); 
+		runTest( TEST_NAME1, true, LanguageException.class ); 
 	}
 	
 	@Test
 	public void testScalarToScalar() 
 	{ 
-		runTest( TEST_NAME1, false, true ); 
+		runTest( TEST_NAME1, false, LanguageException.class ); 
 	}
 	
 	@Test
 	public void testScalarToMatrix() 
 	{ 
-		runTest( TEST_NAME2, false, false ); 
+		runTest( TEST_NAME2, false, null ); 
 	}
 	
 	@Test
 	public void testMatrixToMatrix() 
 	{ 
-		runTest( TEST_NAME2, true, true ); 
+		runTest( TEST_NAME2, true, LanguageException.class ); 
 	}
 	
 	
@@ -85,17 +81,17 @@ public class DataTypeCastingTest extends AutomatedTestBase
 	 * @param cfc
 	 * @param vt
 	 */
-	private void runTest( String testName, boolean matrixInput, boolean exceptionExpected ) 
+	private void runTest( String testName, boolean matrixInput, Class<?> exceptionClass ) 
 	{
 		String TEST_NAME = testName;
-		int numVals = (exceptionExpected ? 7 : 1);
+		int numVals = (exceptionClass != null ? 7 : 1);
 		
 		try
-		{		
+		{
 			TestConfiguration config = getTestConfiguration(TEST_NAME);	
 			loadTestConfiguration(config);
-   
-		    String HOME = SCRIPT_DIR + TEST_DIR;
+
+			String HOME = SCRIPT_DIR + TEST_DIR;
 			fullDMLScriptName = HOME + TEST_NAME + ".dml";
 			programArgs = new String[]{"-args", input("V"), 
 				Integer.toString(numVals), Integer.toString(numVals),
@@ -104,7 +100,7 @@ public class DataTypeCastingTest extends AutomatedTestBase
 			//write input
 			double[][] V = getRandomMatrix(numVals, numVals, 0, 1, 1.0, 7);
 			if( matrixInput ){
-				writeInputMatrix("V", V, false);	
+				writeInputMatrix("V", V, false);
 			}
 			else{
 				HDFSTool.writeDoubleToHDFS(V[0][0], input("V"));
@@ -112,26 +108,25 @@ public class DataTypeCastingTest extends AutomatedTestBase
 			}
 			
 			//run tests
-	        runTest(true, exceptionExpected, DMLException.class, -1);
-	        
-	        if( !exceptionExpected ){
-		        //read output
-		        double ret = -1;
-		        if( testName.equals(TEST_NAME2) ){
-		        	HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("R");
-		        	ret = dmlfile.get(new CellIndex(1,1));		
-		        }
-				else if( testName.equals(TEST_NAME1) ){
-					HashMap<CellIndex, Double> dmlfile = readDMLScalarFromHDFS("R");
+			runTest(true, exceptionClass != null, exceptionClass, -1);
+	
+			if( exceptionClass == null ){
+				//read output
+				double ret = -1;
+				if( testName.equals(TEST_NAME2) ){
+					HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("R");
 					ret = dmlfile.get(new CellIndex(1,1));
 				}
-		        
-		        //compare results
-		        Assert.assertEquals(V[0][0], ret, 1e-16);
-	        }
+				else if( testName.equals(TEST_NAME1) ){
+					HashMap<CellIndex, Double> dmlfile = readDMLScalarFromOutputDir("R");
+					ret = dmlfile.get(new CellIndex(1,1));
+				}
+		
+				//compare results
+				Assert.assertEquals(V[0][0], ret, 1e-16);
+			}
 		}
-		catch(Exception ex)
-		{
+		catch(Exception ex) {
 			throw new RuntimeException(ex);
 		}
 	}

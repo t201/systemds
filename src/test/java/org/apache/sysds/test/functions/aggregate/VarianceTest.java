@@ -22,7 +22,7 @@ package org.apache.sysds.test.functions.aggregate;
 import org.junit.Test;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
@@ -234,8 +234,8 @@ public class VarianceTest extends AutomatedTestBase {
             runRScript(true);
 
             // Compare output matrices
-            HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS(OUTPUT_NAME);
-            HashMap<CellIndex, Double> rfile  = readRMatrixFromFS(OUTPUT_NAME);
+            HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir(OUTPUT_NAME);
+            HashMap<CellIndex, Double> rfile  = readRMatrixFromExpectedDir(OUTPUT_NAME);
             TestUtils.compareMatrices(dmlfile, rfile, eps, "Stat-DML", "Stat-R");
         }
         finally {

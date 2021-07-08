@@ -31,6 +31,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.LinkedList;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Future;
 
@@ -179,6 +180,7 @@ public class IOUtilFunctions
 	{
 		//split by whole separator required for multi-character delimiters, preserve
 		//all tokens required for empty cells and in order to keep cell alignment
+	
 		return StringUtils.splitByWholeSeparatorPreserveAllTokens(str, delim);
 	}
 	
@@ -243,9 +245,10 @@ public class IOUtilFunctions
 	 * @param str string to split
 	 * @param delim delimiter
 	 * @param tokens array for tokens, length needs to match the number of tokens
+	 * @param naStrings the strings to map to null value.
 	 * @return string array of tokens
 	 */
-	public static String[] splitCSV(String str, String delim, String[] tokens)
+	public static String[] splitCSV(String str, String delim, String[] tokens, Set<String> naStrings)
 	{
 		// check for empty input
 		if( str == null || str.isEmpty() )
@@ -255,6 +258,7 @@ public class IOUtilFunctions
 		int from = 0, to = 0; 
 		int len = str.length();
 		int dlen = delim.length();
+		String curString;
 		int pos = 0;
 		while( from < len  ) { // for all tokens
 			if( str.charAt(from) == CSV_QUOTE_CHAR
@@ -277,7 +281,8 @@ public class IOUtilFunctions
 			
 			// slice out token and advance position
 			to = (to >= 0) ? to : len;
-			tokens[pos++] = str.substring(from, to);
+			curString = str.substring(from, to);
+			tokens[pos++] = naStrings!= null ? ((naStrings.contains(curString)) ? null: curString): curString;
 			from = to + delim.length();
 		}
 		
@@ -438,10 +443,10 @@ public class IOUtilFunctions
 		//size in modified UTF-8 as used by DataInput/DataOutput
 		int size = 2; //length in bytes
 		for (int i = 0; i < value.length(); i++) {
-            char c = value.charAt(i);
-            size += ( c>=0x0001 && c<=0x007F) ? 1 :
-            	(c >= 0x0800) ? 3 : 2;
-        }
+			char c = value.charAt(i);
+			size += ( c>=0x0001 && c<=0x007F) ? 1 :
+				(c >= 0x0800) ? 3 : 2;
+		}
 		return size;
 	}
 
@@ -551,6 +556,24 @@ public class IOUtilFunctions
 			ret = new Path[]{ file };
 		}
 		
+		return ret;
+	}
+	
+	public static Path[] getMetadataFilePaths( FileSystem fs, Path file ) 
+		throws IOException
+	{
+		Path[] ret = null;
+		if( fs.isDirectory(file) || IOUtilFunctions.isObjectStoreFileScheme(file) ) {
+			LinkedList<Path> tmp = new LinkedList<>();
+			FileStatus[] dStatus = fs.listStatus(file);
+			for( FileStatus fdStatus : dStatus )
+				if( fdStatus.getPath().toString().endsWith(".mtd") ) //mtd file
+					tmp.add(fdStatus.getPath());
+			ret = tmp.toArray(new Path[0]);
+		}
+		else {
+			throw new DMLRuntimeException("Unable to read meta data files from directory "+file.toString());
+		}
 		return ret;
 	}
 	

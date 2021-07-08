@@ -26,6 +26,7 @@ import org.apache.sysds.common.Types.ExecMode;
 import org.apache.sysds.common.Types.FileFormat;
 import org.apache.sysds.common.Types.OpOp1;
 import org.apache.sysds.common.Types.OpOp2;
+import org.apache.sysds.common.Types.OpOp3;
 import org.apache.sysds.common.Types.OpOpData;
 import org.apache.sysds.common.Types.ReOrgOp;
 import org.apache.sysds.common.Types.ValueType;
@@ -36,7 +37,7 @@ import org.apache.sysds.conf.DMLConfig;
 import org.apache.sysds.hops.rewrite.HopRewriteUtils;
 import org.apache.sysds.lops.Checkpoint;
 import org.apache.sysds.lops.Lop;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.lops.compile.Dag;
 import org.apache.sysds.parser.ForStatementBlock;
 import org.apache.sysds.runtime.DMLRuntimeException;
@@ -46,6 +47,7 @@ import org.apache.sysds.runtime.controlprogram.caching.LazyWriteBuffer;
 import org.apache.sysds.runtime.controlprogram.context.SparkExecutionContext;
 import org.apache.sysds.runtime.controlprogram.parfor.stat.InfrastructureAnalyzer;
 import org.apache.sysds.runtime.data.SparseBlock;
+import org.apache.sysds.runtime.data.SparseBlock.Type;
 import org.apache.sysds.runtime.functionobjects.IntegerDivide;
 import org.apache.sysds.runtime.functionobjects.Modulus;
 import org.apache.sysds.runtime.instructions.cp.Data;
@@ -124,6 +126,13 @@ public class OptimizerUtils
 	 */
 	public static boolean ALLOW_BRANCH_REMOVAL = true;
 	
+	/**
+	 * Enables the removal of (par)for-loops when from, to, and increment are constants
+	 * (original literals or results of constant folding) and lead to an empty sequence,
+	 * i.e., (par)for-loops without a single iteration.
+	 */
+	public static boolean ALLOW_FOR_LOOP_REMOVAL = true;
+
 	public static boolean ALLOW_AUTO_VECTORIZATION = true;
 	
 	/**
@@ -186,6 +195,11 @@ public class OptimizerUtils
 	 * out of while, for, and parfor loops.
 	 */
 	public static boolean ALLOW_CODE_MOTION = false;
+
+	/**
+	 * Compile federated instructions based on input federation state and privacy constraints.
+	 */
+	public static boolean FEDERATED_COMPILATION = false;
 	
 	
 	/**
@@ -205,6 +219,18 @@ public class OptimizerUtils
 	 * 
 	 */
 	public static final boolean ALLOW_COMBINE_FILE_INPUT_FORMAT = true;
+
+	/**
+	 * This variable allows for insertion of Compress and decompress in the dml script from the user.
+	 * This is added because we want to have a way to test, and verify the correct placement of compress and decompress commands.
+	 */
+	public static final boolean ALLOW_SCRIPT_LEVEL_COMPRESS_COMMAND = true;
+
+	/**
+	 * Boolean specifying if compression rewrites is allowed. This is disabled at run time if the IPA for Workload aware compression
+	 * is activated.
+	 */
+	public static boolean ALLOW_COMPRESSION_REWRITE = true;
 
 	//////////////////////
 	// Optimizer levels //
@@ -294,6 +320,7 @@ public class OptimizerUtils
 				ALLOW_INTER_PROCEDURAL_ANALYSIS = false;
 				IPA_NUM_REPETITIONS = 1;
 				ALLOW_BRANCH_REMOVAL = false;
+				ALLOW_FOR_LOOP_REMOVAL = false;
 				ALLOW_SUM_PRODUCT_REWRITES = false;
 				break;
 			// opt level 1: memory-based (no advanced rewrites)	
@@ -306,6 +333,7 @@ public class OptimizerUtils
 				ALLOW_INTER_PROCEDURAL_ANALYSIS = false;
 				IPA_NUM_REPETITIONS = 1;
 				ALLOW_BRANCH_REMOVAL = false;
+				ALLOW_FOR_LOOP_REMOVAL = false;
 				ALLOW_SUM_PRODUCT_REWRITES = false;
 				ALLOW_LOOP_UPDATE_IN_PLACE = false;
 				break;
@@ -360,6 +388,7 @@ public class OptimizerUtils
 		ALLOW_ALGEBRAIC_SIMPLIFICATION = true;
 		ALLOW_AUTO_VECTORIZATION = true;
 		ALLOW_BRANCH_REMOVAL = true;
+		ALLOW_FOR_LOOP_REMOVAL = true;
 		ALLOW_CONSTANT_FOLDING = true;
 		ALLOW_COMMON_SUBEXPRESSION_ELIMINATION = true;
 		ALLOW_INTER_PROCEDURAL_ANALYSIS = true;
@@ -477,8 +506,12 @@ public class OptimizerUtils
 	}
 
 	public static boolean checkSparseBlockCSRConversion( DataCharacteristics dcIn ) {
-		return Checkpoint.CHECKPOINT_SPARSE_CSR
-			&& OptimizerUtils.getSparsity(dcIn) < MatrixBlock.SPARSITY_TURN_POINT;
+		//we use the non-zero bound to make the important csr decision in 
+		//an best effort manner (the precise non-zeros is irrelevant here)
+		double sp = OptimizerUtils.getSparsity(
+			dcIn.getRows(), dcIn.getCols(), dcIn.getNonZerosBound());
+		return Checkpoint.CHECKPOINT_SPARSE_CSR 
+			&& sp < MatrixBlock.SPARSITY_TURN_POINT;
 	}
 	
 	/**
@@ -640,12 +673,16 @@ public class OptimizerUtils
 	 * @param dc matrix characteristics
 	 * @return memory estimate
 	 */
-	public static long estimatePartitionedSizeExactSparsity(DataCharacteristics dc)
+	public static long estimatePartitionedSizeExactSparsity(DataCharacteristics dc) {
+		return estimatePartitionedSizeExactSparsity(dc, true);
+	}
+	
+	public static long estimatePartitionedSizeExactSparsity(DataCharacteristics dc, boolean outputEmptyBlocks)
 	{
 		if (dc instanceof MatrixCharacteristics) {
 			return estimatePartitionedSizeExactSparsity(
-				dc.getRows(), dc.getCols(),
-				dc.getBlocksize(), dc.getNonZerosBound());
+				dc.getRows(), dc.getCols(), dc.getBlocksize(),
+				dc.getNonZerosBound(), outputEmptyBlocks);
 		}
 		else {
 			// TODO estimate partitioned size exact for tensor
@@ -672,6 +709,26 @@ public class OptimizerUtils
 		return estimatePartitionedSizeExactSparsity(rlen, clen, blen, sp);
 	}
 	
+	public static long estimatePartitionedSizeExactSparsity(long rlen, long clen, long blen, long nnz, boolean outputEmptyBlocks)  {
+		double sp = getSparsity(rlen, clen, nnz);
+		return estimatePartitionedSizeExactSparsity(rlen, clen, blen, sp, outputEmptyBlocks);
+	}
+
+	/**
+	 * Estimates the footprint (in bytes) for a partitioned in-memory representation of a
+	 * matrix with the hops dimensions and number of non-zeros nnz.
+	 * 
+	 * @param hop The hop to extract dimensions and nnz from
+	 * @return the memory estimate
+	 */
+	public static long estimatePartitionedSizeExactSparsity(Hop hop){
+		long rlen = hop.getDim1();
+		long clen = hop.getDim2();
+		int blen = hop.getBlocksize();
+		long nnz = hop.getNnz();
+		return  estimatePartitionedSizeExactSparsity(rlen, clen, blen, nnz);
+	}
+	
 	/**
 	 * Estimates the footprint (in bytes) for a partitioned in-memory representation of a
 	 * matrix with dimensions=(nrows,ncols) and sparsity=sp.
@@ -682,7 +739,12 @@ public class OptimizerUtils
 	 * @param sp sparsity
 	 * @return memory estimate
 	 */
-	public static long estimatePartitionedSizeExactSparsity(long rlen, long clen, long blen, double sp) 
+	public static long estimatePartitionedSizeExactSparsity(long rlen, long clen, long blen, double sp) {
+		return estimatePartitionedSizeExactSparsity(rlen, clen, blen, sp, true);
+	}
+	
+	
+	public static long estimatePartitionedSizeExactSparsity(long rlen, long clen, long blen, double sp, boolean outputEmptyBlocks)
 	{
 		long ret = 0;
 
@@ -693,8 +755,8 @@ public class OptimizerUtils
 		if( nnz <= tnrblks * tncblks ) {
 			long lrlen = Math.min(rlen, blen);
 			long lclen = Math.min(clen, blen);
-			return nnz * estimateSizeExactSparsity(lrlen, lclen, 1)
-				 + (tnrblks * tncblks - nnz) * estimateSizeEmptyBlock(lrlen, lclen);
+			return nnz * MatrixBlock.estimateSizeSparseInMemory(lrlen, lclen, 1d/lrlen/lclen, Type.COO)
+				 + (outputEmptyBlocks ? (tnrblks * tncblks - nnz) * estimateSizeEmptyBlock(lrlen, lclen) : 0);
 		}
 		
 		//estimate size of full blen x blen blocks
@@ -728,19 +790,17 @@ public class OptimizerUtils
 	 * @param ncols number of cols
 	 * @return memory estimate
 	 */
-	public static long estimateSize(long nrows, long ncols) 
-	{
+	public static long estimateSize(long nrows, long ncols) {
 		return estimateSizeExactSparsity(nrows, ncols, 1.0);
 	}
 	
-	public static long estimateSizeEmptyBlock(long nrows, long ncols)
-	{
+	public static long estimateSizeEmptyBlock(long nrows, long ncols) {
 		return estimateSizeExactSparsity(0, 0, 0.0d);
 	}
 
 	public static long estimateSizeTextOutput(long rows, long cols, long nnz, FileFormat fmt) {
 		long bsize = MatrixBlock.estimateSizeOnDisk(rows, cols, nnz);
-		if( fmt.isIJVFormat() )
+		if( fmt.isIJV() )
 			return bsize * 3;
 		else if( fmt == FileFormat.LIBSVM )
 			return Math.round(bsize * 2.5);
@@ -906,8 +966,8 @@ public class OptimizerUtils
 			ret &= ( p.getExecType()==ExecType.CP 
 				||(p instanceof AggBinaryOp && allowsToFilterEmptyBlockOutputs(p) )
 				||(HopRewriteUtils.isReorg(p, ReOrgOp.RESHAPE, ReOrgOp.TRANS) && allowsToFilterEmptyBlockOutputs(p) )
-				||(HopRewriteUtils.isData(p, OpOpData.PERSISTENTWRITE) && ((DataOp)p).getInputFormatType()==FileFormat.TEXT))
-				&& !(p instanceof FunctionOp || (p instanceof DataOp && ((DataOp)p).getInputFormatType()!=FileFormat.TEXT) ); //no function call or transient write
+				||(HopRewriteUtils.isData(p, OpOpData.PERSISTENTWRITE) && ((DataOp)p).getFileFormat()==FileFormat.TEXT))
+				&& !(p instanceof FunctionOp || (p instanceof DataOp && ((DataOp)p).getFileFormat()!=FileFormat.TEXT) ); //no function call or transient write
 		}
 		return ret;
 	}
@@ -1144,6 +1204,13 @@ public class OptimizerUtils
 			Math.min(((double)nnz)/dim1/dim2, 1.0);
 	}
 
+	public static double getSparsity(Hop hop){
+		long dim1 = hop.getDim1();
+		long dim2 = hop.getDim2();
+		long nnz = hop.getNnz();
+		return getSparsity(dim1, dim2, nnz);
+	}
+
 	public static double getSparsity(long[] dims, long nnz) {
 		double sparsity = nnz;
 		for (long dim : dims) {
@@ -1250,6 +1317,8 @@ public class OptimizerUtils
 				ret = rEvalSimpleUnaryDoubleExpression(root, valMemo);
 			else if( root instanceof BinaryOp )
 				ret = rEvalSimpleBinaryDoubleExpression(root, valMemo);
+			else if( root instanceof TernaryOp )
+				ret = rEvalSimpleTernaryDoubleExpression(root, valMemo);
 		}
 		
 		valMemo.put(root.getHopID(), ret);
@@ -1395,6 +1464,23 @@ public class OptimizerUtils
 		return ret;
 	}
 
+	protected static double rEvalSimpleTernaryDoubleExpression( Hop root, HashMap<Long, Double> valMemo ) {
+		//memoization (prevent redundant computation of common subexpr)
+		if( valMemo.containsKey(root.getHopID()) )
+			return valMemo.get(root.getHopID());
+		
+		double ret = Double.MAX_VALUE;
+		TernaryOp troot = (TernaryOp) root;
+		if( troot.getOp()==OpOp3.IFELSE ) {
+			if( HopRewriteUtils.isLiteralOfValue(troot.getInput(0), true) )
+				ret = rEvalSimpleDoubleExpression(troot.getInput().get(1), valMemo);
+			else if( HopRewriteUtils.isLiteralOfValue(troot.getInput(0), false) )
+				ret = rEvalSimpleDoubleExpression(troot.getInput().get(2), valMemo);
+		}
+		valMemo.put(root.getHopID(), ret);
+		return ret;
+	}
+	
 	protected static double rEvalSimpleBinaryDoubleExpression( Hop root, HashMap<Long, Double> valMemo, LocalVariableMap vars ) 
 	{
 		//memoization (prevent redundant computation of common subexpr)

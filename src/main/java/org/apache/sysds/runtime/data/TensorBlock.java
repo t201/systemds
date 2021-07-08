@@ -27,6 +27,8 @@ import org.apache.sysds.runtime.controlprogram.caching.CacheBlock;
 import org.apache.sysds.runtime.io.IOUtilFunctions;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
 import org.apache.sysds.runtime.matrix.operators.BinaryOperator;
+import org.apache.sysds.runtime.meta.DataCharacteristics;
+import org.apache.sysds.runtime.meta.TensorCharacteristics;
 import org.apache.sysds.runtime.util.UtilFunctions;
 
 import java.io.DataInput;
@@ -248,6 +250,11 @@ public class TensorBlock implements CacheBlock, Externalizable {
 		return getDim(1);
 	}
 
+	@Override
+	public DataCharacteristics getDataCharacteristics() {
+		return new TensorCharacteristics(getLongDims(), -1);
+	}
+	
 	@Override
 	public long getInMemorySize() {
 		// TODO Auto-generated method stub
@@ -590,6 +597,8 @@ public class TensorBlock implements CacheBlock, Externalizable {
 		long size = 8 + 1;
 		if (!bt.isSparse()) {
 			switch (bt._vt) {
+				case UINT8:
+					size += 1 * getLength(); break;
 				case INT32:
 				case FP32:
 					size += 4 * getLength(); break;

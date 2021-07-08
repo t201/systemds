@@ -31,6 +31,7 @@ import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.mapred.JobConf;
+import org.apache.sysds.runtime.io.FileFormatPropertiesCSV;
 import org.apache.wink.json4j.JSONException;
 import org.apache.wink.json4j.OrderedJSONObject;
 import org.apache.sysds.common.Types.DataType;
@@ -40,6 +41,8 @@ import org.apache.sysds.conf.ConfigurationManager;
 import org.apache.sysds.hops.OptimizerUtils;
 import org.apache.sysds.parser.DataExpression;
 import org.apache.sysds.runtime.DMLRuntimeException;
+import org.apache.sysds.runtime.instructions.cp.ScalarObject;
+import org.apache.sysds.runtime.instructions.cp.ScalarObjectFactory;
 import org.apache.sysds.runtime.io.BinaryBlockSerialization;
 import org.apache.sysds.runtime.io.FileFormatProperties;
 import org.apache.sysds.runtime.io.IOUtilFunctions;
@@ -307,11 +310,28 @@ public class HDFSTool
 			default: return line;
 		}
 	}
-		
+	
+	public static ScalarObject readScalarObjectFromHDFSFile(String fname, ValueType vt) {
+		try {
+			Object obj = null;
+			switch( vt ) {
+				case INT64:   obj = readIntegerFromHDFSFile(fname); break;
+				case FP64:    obj = readDoubleFromHDFSFile(fname); break;
+				case BOOLEAN: obj = readBooleanFromHDFSFile(fname); break;
+				case STRING:
+				default:      obj = readStringFromHDFSFile(fname);
+			}
+			return ScalarObjectFactory.createScalarObject(vt, obj);
+		}
+		catch(Exception ex) {
+			throw new DMLRuntimeException(ex);
+		}
+	}
+	
 	private static BufferedWriter setupOutputFile ( String filename ) throws IOException {
 		Path path = new Path(filename);
 		FileSystem fs = IOUtilFunctions.getFileSystem(path);
-		BufferedWriter br=new BufferedWriter(new OutputStreamWriter(fs.create(path,true)));		
+		BufferedWriter br=new BufferedWriter(new OutputStreamWriter(fs.create(path,true)));
 		return br;
 	}
 	
@@ -360,6 +380,11 @@ public class HDFSTool
 	public static void writeMetaDataFile(String mtdfile, ValueType vt, DataCharacteristics dc, FileFormat fmt, FileFormatProperties formatProperties)
 		throws IOException {
 		writeMetaDataFile(mtdfile, vt, null, DataType.MATRIX, dc, fmt, formatProperties);
+	}
+
+	public static void writeMetaDataFile(String mtdfile, ValueType vt, DataCharacteristics dc, FileFormat fmt, FileFormatProperties formatProperties, PrivacyConstraint privacyConstraint)
+		throws IOException {
+		writeMetaDataFile(mtdfile, vt, null, DataType.MATRIX, dc, fmt, formatProperties, privacyConstraint);
 	}
 	
 	public static void writeMetaDataFile(String mtdfile, ValueType vt, ValueType[] schema, DataType dt, DataCharacteristics dc,
@@ -450,11 +475,6 @@ public class HDFSTool
 			}
 		}
 
-		//add privacy constraints
-		if ( privacyConstraint != null ){
-			mtd.put(DataExpression.PRIVACY, privacyConstraint.getPrivacy());
-		}
-
 		//add username and time
 		String userName = System.getProperty("user.name");
 		if (StringUtils.isNotEmpty(userName)) {
@@ -462,9 +482,20 @@ public class HDFSTool
 		} else {
 			mtd.put(DataExpression.AUTHORPARAM, "SystemDS");
 		}
+		
+		if (formatProperties instanceof FileFormatPropertiesCSV) {
+			FileFormatPropertiesCSV csvProps = (FileFormatPropertiesCSV) formatProperties;
+			mtd.put(DataExpression.DELIM_HAS_HEADER_ROW, csvProps.hasHeader());
+			mtd.put(DataExpression.DELIM_DELIMITER, csvProps.getDelim());
+		}
 
 		SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss z");
 		mtd.put(DataExpression.CREATEDPARAM, sdf.format(new Date()));
+
+		//add privacy constraints
+		if ( privacyConstraint != null ){
+			privacyConstraint.toJson(mtd);
+		}
 
 		return mtd.toString(4); // indent with 4 spaces	
 	}

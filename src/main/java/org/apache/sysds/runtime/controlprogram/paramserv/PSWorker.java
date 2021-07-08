@@ -19,28 +19,33 @@
 
 package org.apache.sysds.runtime.controlprogram.paramserv;
 
-import static org.apache.sysds.runtime.controlprogram.paramserv.ParamservUtils.PS_FUNC_PREFIX;
-
 import java.io.Serializable;
 import java.util.ArrayList;
+import java.util.concurrent.ExecutorService;
 import java.util.stream.Collectors;
 
 import org.apache.sysds.common.Types.DataType;
+import org.apache.sysds.parser.DMLProgram;
 import org.apache.sysds.parser.DataIdentifier;
 import org.apache.sysds.parser.Statement;
 import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.runtime.controlprogram.FunctionProgramBlock;
+import org.apache.sysds.runtime.controlprogram.caching.LazyWriteBuffer;
 import org.apache.sysds.runtime.controlprogram.caching.MatrixObject;
 import org.apache.sysds.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysds.runtime.controlprogram.parfor.stat.Timing;
 import org.apache.sysds.runtime.instructions.cp.CPOperand;
 import org.apache.sysds.runtime.instructions.cp.FunctionCallCPInstruction;
 
-// TODO use the validate features and labels to calculate the model precision when training
 public abstract class PSWorker implements Serializable 
 {
 	private static final long serialVersionUID = -3510485051178200118L;
 
+	// thread pool for asynchronous accrue gradients on epoch scheduling
+	// Note: we use a non-static variable to obtain the live maintenance thread pool
+	// which is important in scenarios w/ multiple scripts in a single JVM (e.g., tests)
+	protected ExecutorService _tpool = LazyWriteBuffer.getUtilThreadPool();
+	
 	protected int _workerID;
 	protected int _epochs;
 	protected long _batchSize;
@@ -68,21 +73,20 @@ public abstract class PSWorker implements Serializable
 
 	protected void setupUpdateFunction(String updFunc, ExecutionContext ec) {
 		// Get the update function
-		String[] cfn = ParamservUtils.getCompleteFuncName(updFunc, PS_FUNC_PREFIX);
+		String[] cfn = DMLProgram.splitFunctionKey(updFunc);
 		String ns = cfn[0];
 		String fname = cfn[1];
-		FunctionProgramBlock func = ec.getProgram().getFunctionProgramBlock(ns, fname);
+		boolean opt = !ec.getProgram().containsFunctionProgramBlock(ns, fname, false);
+		FunctionProgramBlock func = ec.getProgram().getFunctionProgramBlock(ns, fname, opt);
 		ArrayList<DataIdentifier> inputs = func.getInputParams();
 		ArrayList<DataIdentifier> outputs = func.getOutputParams();
 		CPOperand[] boundInputs = inputs.stream()
 			.map(input -> new CPOperand(input.getName(), input.getValueType(), input.getDataType()))
 			.toArray(CPOperand[]::new);
-		ArrayList<String> inputNames = inputs.stream().map(DataIdentifier::getName)
-			.collect(Collectors.toCollection(ArrayList::new));
 		ArrayList<String> outputNames = outputs.stream().map(DataIdentifier::getName)
 			.collect(Collectors.toCollection(ArrayList::new));
-		_inst = new FunctionCallCPInstruction(ns, fname, boundInputs,
-			inputNames, func.getInputParamNames(), outputNames, "update function");
+		_inst = new FunctionCallCPInstruction(ns, fname, opt, boundInputs,
+			func.getInputParamNames(), outputNames, "update function");
 
 		// Check the inputs of the update function
 		checkInput(false, inputs, DataType.MATRIX, Statement.PS_FEATURES);

@@ -25,6 +25,7 @@ import java.lang.management.ManagementFactory;
 import java.text.DecimalFormat;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map.Entry;
 import java.util.Set;
@@ -32,18 +33,23 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.DoubleAdder;
 import java.util.concurrent.atomic.LongAdder;
 
+import org.apache.commons.lang3.tuple.ImmutablePair;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.conf.ConfigurationManager;
 import org.apache.sysds.hops.OptimizerUtils;
 import org.apache.sysds.runtime.controlprogram.caching.CacheStatistics;
 import org.apache.sysds.runtime.controlprogram.context.SparkExecutionContext;
+import org.apache.sysds.runtime.controlprogram.federated.FederatedRequest.RequestType;
+import org.apache.sysds.runtime.controlprogram.federated.FederatedStatistics;
+import org.apache.sysds.runtime.controlprogram.parfor.stat.Timing;
 import org.apache.sysds.runtime.instructions.Instruction;
 import org.apache.sysds.runtime.instructions.InstructionUtils;
 import org.apache.sysds.runtime.instructions.cp.FunctionCallCPInstruction;
 import org.apache.sysds.runtime.instructions.spark.SPInstruction;
 import org.apache.sysds.runtime.lineage.LineageCacheConfig.ReuseCacheType;
 import org.apache.sysds.runtime.lineage.LineageCacheStatistics;
-import org.apache.sysds.runtime.matrix.data.LibMatrixDNN;
+import org.apache.sysds.runtime.privacy.CheckedConstraintsLog;
 
 /**
  * This class captures all statistics.
@@ -115,6 +121,8 @@ public class Statistics
 	private static final LongAdder sparkBroadcastCount = new LongAdder();
 
 	// Paramserv function stats (time is in milli sec)
+	private static final Timing psExecutionTimer = new Timing(false);
+	private static final LongAdder psExecutionTime = new LongAdder();
 	private static final LongAdder psNumWorkers = new LongAdder();
 	private static final LongAdder psSetupTime = new LongAdder();
 	private static final LongAdder psGradientComputeTime = new LongAdder();
@@ -123,6 +131,12 @@ public class Statistics
 	private static final LongAdder psModelBroadcastTime = new LongAdder();
 	private static final LongAdder psBatchIndexTime = new LongAdder();
 	private static final LongAdder psRpcRequestTime = new LongAdder();
+	private static final LongAdder psValidationTime = new LongAdder();
+	// Federated parameter server specifics (time is in milli sec)
+	private static final LongAdder fedPSDataPartitioningTime = new LongAdder();
+	private static final LongAdder fedPSWorkerComputingTime = new LongAdder();
+	private static final LongAdder fedPSGradientWeightingTime = new LongAdder();
+	private static final LongAdder fedPSCommunicationTime = new LongAdder();
 
 	//PARFOR optimization stats (low frequency updates)
 	private static long parforOptTime = 0; //in milli sec
@@ -134,6 +148,13 @@ public class Statistics
 	private static final LongAdder lTotalLix = new LongAdder();
 	private static final LongAdder lTotalLixUIP = new LongAdder();
 	
+	// Federated stats
+	private static final LongAdder federatedReadCount = new LongAdder();
+	private static final LongAdder federatedPutCount = new LongAdder();
+	private static final LongAdder federatedGetCount = new LongAdder();
+	private static final LongAdder federatedExecuteInstructionCount = new LongAdder();
+	private static final LongAdder federatedExecuteUDFCount = new LongAdder();
+
 	private static LongAdder numNativeFailures = new LongAdder();
 	public static LongAdder numNativeLibMatrixMultCalls = new LongAdder();
 	public static LongAdder numNativeConv2dCalls = new LongAdder();
@@ -150,6 +171,8 @@ public class Statistics
 	public static long recomputeNNZTime = 0;
 	public static long examSparsityTime = 0;
 	public static long allocateDoubleArrTime = 0;
+
+	public static boolean allowWorkerStatistics = true;
 	
 	public static void incrementNativeFailuresCounter() {
 		numNativeFailures.increment();
@@ -375,6 +398,28 @@ public class Statistics
 		parforMergeTime += time;
 	}
 
+	public static synchronized void incFederated(RequestType rqt){
+		switch (rqt) {
+			case READ_VAR:
+				federatedReadCount.increment();
+				break;
+			case PUT_VAR:
+				federatedPutCount.increment();
+				break;
+			case GET_VAR:
+				federatedGetCount.increment();
+				break;
+			case EXEC_INST:
+				federatedExecuteInstructionCount.increment();
+				break;
+			case EXEC_UDF:
+				federatedExecuteUDFCount.increment();
+				break;
+			default:
+				break;
+		}
+	}
+
 	public static void startCompileTimer() {
 		if( DMLScript.STATISTICS )
 			compileStartTime = System.nanoTime();
@@ -469,7 +514,13 @@ public class Statistics
 		nativeConv2dTime = 0;
 		nativeConv2dBwdFilterTime = 0;
 		nativeConv2dBwdDataTime = 0;
-		LibMatrixDNN.resetStatistics();
+		federatedReadCount.reset();
+		federatedPutCount.reset();
+		federatedGetCount.reset();
+		federatedExecuteInstructionCount.reset();
+		federatedExecuteUDFCount.reset();
+
+		DMLCompressionStatistics.reset();
 	}
 
 	public static void resetJITCompileTime(){
@@ -524,6 +575,18 @@ public class Statistics
 		psNumWorkers.add(n);
 	}
 
+	public static Timing getPSExecutionTimer() {
+		return psExecutionTimer;
+	}
+
+	public static double getPSExecutionTime() {
+		return psExecutionTime.doubleValue();
+	}
+
+	public static void accPSExecutionTime(long n) {
+		psExecutionTime.add(n);
+	}
+
 	public static void accPSSetupTime(long t) {
 		psSetupTime.add(t);
 	}
@@ -552,25 +615,45 @@ public class Statistics
 		psRpcRequestTime.add(t);
 	}
 
+	public static double getPSValidationTime() {
+		return psValidationTime.doubleValue();
+	}
+
+	public static void accPSValidationTime(long t) {
+		psValidationTime.add(t);
+	}
+
+	public static void accFedPSDataPartitioningTime(long t) {
+		fedPSDataPartitioningTime.add(t);
+	}
+
+	public static void accFedPSWorkerComputing(long t) {
+		fedPSWorkerComputingTime.add(t);
+	}
+
+	public static void accFedPSGradientWeightingTime(long t) {
+		fedPSGradientWeightingTime.add(t);
+	}
+
+	public static void accFedPSCommunicationTime(long t) { fedPSCommunicationTime.add(t);}
+
 	public static String getCPHeavyHitterCode( Instruction inst )
 	{
 		String opcode = null;
 		
-		if( inst instanceof SPInstruction )
-		{
+		if( inst instanceof SPInstruction ) {
 			opcode = "SP_"+InstructionUtils.getOpCode(inst.toString());
 			if( inst instanceof FunctionCallCPInstruction ) {
 				FunctionCallCPInstruction extfunct = (FunctionCallCPInstruction)inst;
 				opcode = extfunct.getFunctionName();
-			}	
+			}
 		}
-		else //CPInstructions
-		{
+		else { //CPInstructions
 			opcode = InstructionUtils.getOpCode(inst.toString());
 			if( inst instanceof FunctionCallCPInstruction ) {
 				FunctionCallCPInstruction extfunct = (FunctionCallCPInstruction)inst;
 				opcode = extfunct.getFunctionName();
-			}		
+			}
 		}
 		
 		return opcode;
@@ -653,6 +736,17 @@ public class Statistics
 		return (tmp != null) ? tmp.count.longValue() : 0;
 	}
 
+	public static HashMap<String, Pair<Long, Double>> getHeavyHittersHashMap() {
+		HashMap<String, Pair<Long, Double>> heavyHitters = new HashMap<>();
+		for(String opcode : _instStats.keySet()) {
+			InstStats val = _instStats.get(opcode);
+			long count = val.count.longValue();
+			double time = val.time.longValue() / 1000000000d; // in sec
+			heavyHitters.put(opcode, new ImmutablePair<>(new Long(count), new Double(time)));
+		}
+		return heavyHitters;
+	}
+
 	/**
 	 * Obtain a string tabular representation of the heavy hitter instructions
 	 * that displays the time, instruction count, and optionally GPU stats about
@@ -722,13 +816,13 @@ public class Statistics
 				if(wrapIter == 0) {
 					// Display instruction count
 					sb.append(String.format(
-							" %" + maxNumLen + "d  %-" + maxInstLen + "s  %" + maxTimeSLen + "s  %" + maxCountLen + "d",
-							(i + 1), instStr, timeSString, count));
+						" %" + maxNumLen + "d  %-" + maxInstLen + "s  %" + maxTimeSLen + "s  %" + maxCountLen + "d",
+						(i + 1), instStr, timeSString, count));
 				}
 				else {
 					sb.append(String.format(
-							" %" + maxNumLen + "s  %-" + maxInstLen + "s  %" + maxTimeSLen + "s  %" + maxCountLen + "s",
-							"", instStr, "", ""));
+						" %" + maxNumLen + "s  %-" + maxInstLen + "s  %" + maxTimeSLen + "s  %" + maxCountLen + "s",
+						"", instStr, "", ""));
 				}
 				sb.append("\n");
 			}
@@ -759,8 +853,8 @@ public class Statistics
 
 		maxNameLength = Math.max(maxNameLength, "Object".length());
 		StringBuilder res = new StringBuilder();
-		res.append(String.format("  %-" + numPadLen + "s" + "  %-" + maxNameLength + "s" + "  %s\n",
-				"#", "Object", "Memory"));
+		res.append(String.format("  %-" + numPadLen + "s" + "  %-" 
+			+ maxNameLength + "s" + "  %s\n", "#", "Object", "Memory"));
 
 		for (int ix = 1; ix <= numHittersToDisplay; ix++) {
 			String objName = entries[ix-1].getKey();
@@ -795,8 +889,7 @@ public class Statistics
 	public static long getJITCompileTime(){
 		long ret = -1; //unsupported
 		CompilationMXBean cmx = ManagementFactory.getCompilationMXBean();
-		if( cmx.isCompilationTimeMonitoringSupported() )
-		{
+		if( cmx.isCompilationTimeMonitoringSupported() ) {
 			ret = cmx.getTotalCompilationTime();
 			ret += jitCompileTime; //add from remote processes
 		}
@@ -878,7 +971,7 @@ public class Statistics
 	}
 	
 	
-	private static String [] wrap(String str, int wrapLength) {
+	public static String [] wrap(String str, int wrapLength) {
 		int numLines = (int) Math.ceil( ((double)str.length()) / wrapLength);
 		int len = str.length();
 		String [] ret = new String[numLines];
@@ -932,8 +1025,8 @@ public class Statistics
 						String.format("%.3f", examSparsityTime*1e-9) + "/" + String.format("%.3f", allocateDoubleArrTime*1e-9)  + ".\n");
 			}
 
-			sb.append("Cache hits (Mem, WB, FS, HDFS):\t" + CacheStatistics.displayHits() + ".\n");
-			sb.append("Cache writes (WB, FS, HDFS):\t" + CacheStatistics.displayWrites() + ".\n");
+			sb.append("Cache hits (Mem/Li/WB/FS/HDFS):\t" + CacheStatistics.displayHits() + ".\n");
+			sb.append("Cache writes (Li/WB/FS/HDFS):\t" + CacheStatistics.displayWrites() + ".\n");
 			sb.append("Cache times (ACQr/m, RLS, EXP):\t" + CacheStatistics.displayTime() + " sec.\n");
 			if (DMLScript.JMLC_MEM_STATISTICS)
 				sb.append("Max size of live objects:\t" + byteCountToDisplaySize(getSizeofPinnedObjects()) + " ("  + getNumPinnedObjects() + " total objects)" + "\n");
@@ -946,11 +1039,11 @@ public class Statistics
 			if (DMLScript.LINEAGE && !ReuseCacheType.isNone()) {
 				sb.append("LinCache hits (Mem/FS/Del): \t" + LineageCacheStatistics.displayHits() + ".\n");
 				sb.append("LinCache MultiLevel (Ins/SB/Fn):" + LineageCacheStatistics.displayMultiLevelHits() + ".\n");
+				sb.append("LinCache GPU (Hit/Async/Sync): \t" + LineageCacheStatistics.displayGpuStats() + ".\n");
 				sb.append("LinCache writes (Mem/FS/Del): \t" + LineageCacheStatistics.displayWtrites() + ".\n");
-				sb.append("LinCache FStimes (Rd/Wr): \t" + LineageCacheStatistics.displayTime() + " sec.\n");
-				sb.append("LinCache costing time:  \t" + LineageCacheStatistics.displayCostingTime() + " sec.\n");
+				sb.append("LinCache FStimes (Rd/Wr): \t" + LineageCacheStatistics.displayFSTime() + " sec.\n");
+				sb.append("LinCache Computetime (S/M): \t" + LineageCacheStatistics.displayComputeTime() + " sec.\n");
 				sb.append("LinCache Rewrites:    \t\t" + LineageCacheStatistics.displayRewrites() + ".\n");
-				sb.append("LinCache RWtime (Com/Ex): \t" + LineageCacheStatistics.displayRewriteTime() + " sec.\n");
 			}
 			if( ConfigurationManager.isCodegenEnabled() ) {
 				sb.append("Codegen compile (DAG,CP,JC):\t" + getCodegenDAGCompile() + "/"
@@ -976,14 +1069,26 @@ public class Statistics
 								sparkCollect.longValue()*1e-9));
 			}
 			if (psNumWorkers.longValue() > 0) {
+				sb.append(String.format("Paramserv total execution time:\t%.3f secs.\n", psExecutionTime.doubleValue() / 1000));
 				sb.append(String.format("Paramserv total num workers:\t%d.\n", psNumWorkers.longValue()));
 				sb.append(String.format("Paramserv setup time:\t\t%.3f secs.\n", psSetupTime.doubleValue() / 1000));
-				sb.append(String.format("Paramserv grad compute time:\t%.3f secs.\n", psGradientComputeTime.doubleValue() / 1000));
-				sb.append(String.format("Paramserv model update time:\t%.3f/%.3f secs.\n",
+
+				if(fedPSDataPartitioningTime.doubleValue() > 0) { 	//if data partitioning happens this is the federated case
+					sb.append(String.format("PS fed data partitioning time:\t%.3f secs.\n", fedPSDataPartitioningTime.doubleValue() / 1000));
+					sb.append(String.format("PS fed comm time (cum):\t\t%.3f secs.\n", fedPSCommunicationTime.doubleValue() / 1000));
+					sb.append(String.format("PS fed worker comp time (cum):\t%.3f secs.\n", fedPSWorkerComputingTime.doubleValue() / 1000));
+					sb.append(String.format("PS fed grad. weigh. time (cum):\t%.3f secs.\n", fedPSGradientWeightingTime.doubleValue() / 1000));
+					sb.append(String.format("PS fed global model agg time:\t%.3f secs.\n", psAggregationTime.doubleValue() / 1000));
+				}
+				else {
+					sb.append(String.format("Paramserv grad compute time:\t%.3f secs.\n", psGradientComputeTime.doubleValue() / 1000));
+					sb.append(String.format("Paramserv model update time:\t%.3f/%.3f secs.\n",
 						psLocalModelUpdateTime.doubleValue() / 1000, psAggregationTime.doubleValue() / 1000));
-				sb.append(String.format("Paramserv model broadcast time:\t%.3f secs.\n", psModelBroadcastTime.doubleValue() / 1000));
-				sb.append(String.format("Paramserv batch slice time:\t%.3f secs.\n", psBatchIndexTime.doubleValue() / 1000));
-				sb.append(String.format("Paramserv RPC request time:\t%.3f secs.\n", psRpcRequestTime.doubleValue() / 1000));
+					sb.append(String.format("Paramserv model broadcast time:\t%.3f secs.\n", psModelBroadcastTime.doubleValue() / 1000));
+					sb.append(String.format("Paramserv batch slice time:\t%.3f secs.\n", psBatchIndexTime.doubleValue() / 1000));
+					sb.append(String.format("Paramserv RPC request time:\t%.3f secs.\n", psRpcRequestTime.doubleValue() / 1000));
+				}
+				sb.append(String.format("Paramserv valdiation time:\t%.3f secs.\n", psValidationTime.doubleValue() / 1000));
 			}
 			if( parforOptCount>0 ){
 				sb.append("ParFor loops optimized:\t\t" + getParforOptCount() + ".\n");
@@ -992,11 +1097,32 @@ public class Statistics
 				sb.append("ParFor result merge time:\t" + String.format("%.3f", ((double)getParforMergeTime())/1000) + " sec.\n");
 				sb.append("ParFor total update in-place:\t" + lTotalUIPVar + "/" + lTotalLixUIP + "/" + lTotalLix + "\n");
 			}
+			if( federatedReadCount.longValue() > 0){
+				sb.append("Federated I/O (Read, Put, Get):\t" + 
+					federatedReadCount.longValue() + "/" +
+					federatedPutCount.longValue() + "/" +
+					federatedGetCount.longValue() + ".\n");
+				sb.append("Federated Execute (Inst, UDF):\t" +
+					federatedExecuteInstructionCount.longValue() + "/" +
+					federatedExecuteUDFCount.longValue() + ".\n");
+			}
+
+			if(ConfigurationManager.isCompressionEnabled()){
+				DMLCompressionStatistics.display(sb);
+			}
 
 			sb.append("Total JIT compile time:\t\t" + ((double)getJITCompileTime())/1000 + " sec.\n");
 			sb.append("Total JVM GC count:\t\t" + getJVMgcCount() + ".\n");
 			sb.append("Total JVM GC time:\t\t" + ((double)getJVMgcTime())/1000 + " sec.\n");
 			sb.append("Heavy hitter instructions:\n" + getHeavyHitters(maxHeavyHitters));
+		}
+
+		if (DMLScript.CHECK_PRIVACY)
+			sb.append(CheckedConstraintsLog.display());
+
+		if(DMLScript.FED_STATISTICS) {
+			sb.append("\n");
+			sb.append(FederatedStatistics.displayFedStatistics(DMLScript.FED_STATISTICS_COUNT));
 		}
 
 		return sb.toString();

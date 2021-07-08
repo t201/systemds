@@ -20,6 +20,11 @@
 package org.apache.sysds.runtime.instructions.spark;
 
 
+import java.util.Iterator;
+import java.util.stream.IntStream;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.function.Function;
@@ -48,12 +53,12 @@ import org.apache.sysds.runtime.matrix.operators.AggregateBinaryOperator;
 import org.apache.sysds.runtime.matrix.operators.AggregateOperator;
 import org.apache.sysds.runtime.matrix.operators.Operator;
 import org.apache.sysds.runtime.meta.DataCharacteristics;
+
 import scala.Tuple2;
 
-import java.util.Iterator;
-import java.util.stream.IntStream;
-
 public class MapmmSPInstruction extends BinarySPInstruction {
+	private static final Log LOG = LogFactory.getLog(MapmmSPInstruction.class.getName());
+	
 	private CacheType _type = null;
 	private boolean _outputEmpty = true;
 	private SparkAggType _aggtype;
@@ -80,9 +85,8 @@ public class MapmmSPInstruction extends BinarySPInstruction {
 		boolean outputEmpty = Boolean.parseBoolean(parts[5]);
 		SparkAggType aggtype = SparkAggType.valueOf(parts[6]);
 		
-		AggregateOperator agg = new AggregateOperator(0, Plus.getPlusFnObject());
-		AggregateBinaryOperator aggbin = new AggregateBinaryOperator(Multiply.getMultiplyFnObject(), agg);
-		return new MapmmSPInstruction(aggbin, in1, in2, out, type, outputEmpty, aggtype, opcode, str);		
+		AggregateBinaryOperator aggbin = InstructionUtils.getMatMultOperator(1);
+		return new MapmmSPInstruction(aggbin, in1, in2, out, type, outputEmpty, aggtype, opcode, str);
 	}
 	
 	@Override
@@ -245,14 +249,10 @@ public class MapmmSPInstruction extends BinarySPInstruction {
 		private final AggregateBinaryOperator _op;
 		private final PartitionedBroadcast<MatrixBlock> _pbc;
 		
-		public RDDMapMMFunction( CacheType type, PartitionedBroadcast<MatrixBlock> binput )
-		{
+		public RDDMapMMFunction( CacheType type, PartitionedBroadcast<MatrixBlock> binput ) {
 			_type = type;
 			_pbc = binput;
-			
-			//created operator for reuse
-			AggregateOperator agg = new AggregateOperator(0, Plus.getPlusFnObject());
-			_op = new AggregateBinaryOperator(Multiply.getMultiplyFnObject(), agg);
+			_op = InstructionUtils.getMatMultOperator(1);
 		}
 		
 		@Override
@@ -380,15 +380,14 @@ public class MapmmSPInstruction extends BinarySPInstruction {
 			{
 				MatrixIndexes ixIn = arg._1();
 				MatrixBlock blkIn = arg._2();
-				MatrixBlock blkOut = new MatrixBlock();
-		
-				if( _type == CacheType.LEFT )
-				{
-					//get the right hand side matrix
+				MatrixBlock blkOut;
+				
+				if( _type == CacheType.LEFT ) {
+					//get the right hand side matrixW
 					MatrixBlock left = _pbc.getBlock(1, (int)ixIn.getRowIndex());
-					
+
 					//execute index preserving matrix multiplication
-					OperationsOnMatrixValues.matMult(left, blkIn, blkOut, _op);
+					blkOut = OperationsOnMatrixValues.matMult(left, blkIn, _op);
 				}
 				else //if( _type == CacheType.RIGHT )
 				{
@@ -396,9 +395,8 @@ public class MapmmSPInstruction extends BinarySPInstruction {
 					MatrixBlock right = _pbc.getBlock((int)ixIn.getColumnIndex(), 1);
 
 					//execute index preserving matrix multiplication
-					OperationsOnMatrixValues.matMult(blkIn, right, blkOut, _op);
+					blkOut = OperationsOnMatrixValues.matMult(blkIn, right, _op);
 				}
-			
 				return new Tuple2<>(ixIn, blkOut);
 			}
 		}
@@ -412,14 +410,10 @@ public class MapmmSPInstruction extends BinarySPInstruction {
 		private final AggregateBinaryOperator _op;
 		private final PartitionedBroadcast<MatrixBlock> _pbc;
 		
-		public RDDFlatMapMMFunction( CacheType type, PartitionedBroadcast<MatrixBlock> binput )
-		{
+		public RDDFlatMapMMFunction( CacheType type, PartitionedBroadcast<MatrixBlock> binput ) {
 			_type = type;
 			_pbc = binput;
-			
-			//created operator for reuse
-			AggregateOperator agg = new AggregateOperator(0, Plus.getPlusFnObject());
-			_op = new AggregateBinaryOperator(Multiply.getMultiplyFnObject(), agg);
+			_op = InstructionUtils.getMatMultOperator(1);
 		}
 		
 		@Override

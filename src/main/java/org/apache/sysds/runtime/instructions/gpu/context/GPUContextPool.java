@@ -30,6 +30,7 @@ import java.util.List;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.sysds.runtime.DMLRuntimeException;
+import org.apache.sysds.runtime.lineage.LineageGPUCacheEviction;
 import org.apache.sysds.utils.GPUStatistics;
 
 import jcuda.driver.JCudaDriver;
@@ -83,6 +84,8 @@ public class GPUContextPool {
 	 * All these need be done once, and not per GPU
 	 */
 	public synchronized static void initializeGPU() {
+		if (initialized)
+			return;
 		initialized = true;
 		GPUContext.LOG.info("Initializing CUDA");
 		long start = System.nanoTime();
@@ -150,6 +153,9 @@ public class GPUContextPool {
 		//LOG.debug("Active CUDA device number : " + device[0]);
 		//LOG.debug("Max Blocks/Threads/SharedMem on active device: " + maxBlocks + "/" + maxThreadsPerBlock + "/" + sharedMemPerBlock);
 		GPUStatistics.cudaInitTime = System.nanoTime() - start;
+
+		// Initialize the maximum size of the lineage cache in the GPU (30% of initial GPU memory)
+		LineageGPUCacheEviction.setGPULineageCacheLimit();
 	}
 
 	/**
@@ -210,8 +216,7 @@ public class GPUContextPool {
 	public static synchronized List<GPUContext> reserveAllGPUContexts() {
 		if (reserved)
 			throw new DMLRuntimeException("Trying to re-reserve GPUs");
-		if (!initialized)
-			initializeGPU();
+		initializeGPU();
 		reserved = true;
 		LOG.trace("GPU : Reserved all GPUs");
 		return pool;

@@ -23,7 +23,7 @@ import java.util.HashMap;
 import org.junit.Test;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.runtime.util.DnnUtils;
 import org.apache.sysds.test.AutomatedTestBase;
@@ -32,7 +32,6 @@ import org.apache.sysds.test.TestUtils;
 
 public class Conv2DBackwardDataTest extends AutomatedTestBase
 {
-	
 	private final static String TEST_NAME = "Conv2DBackwardDataTest";
 	private final static String TEST_DIR = "functions/tensor/";
 	private final static String TEST_CLASS_DIR = TEST_DIR + Conv2DBackwardDataTest.class.getSimpleName() + "/";
@@ -149,7 +148,7 @@ public class Conv2DBackwardDataTest extends AutomatedTestBase
 				DMLScript.USE_LOCAL_SPARK_CONFIG = true;
 			
 			loadTestConfiguration(config);
-	        
+			
 			/* This is for running the junit test the new way, i.e., construct the arguments directly */
 			String RI_HOME = SCRIPT_DIR + TEST_DIR;
 			fullDMLScriptName = RI_HOME + TEST_NAME + ".dml";
@@ -158,12 +157,12 @@ public class Conv2DBackwardDataTest extends AutomatedTestBase
 			String sparseVal2 = (""+sparse2).toUpperCase();
 			
 			long P = DnnUtils.getP(imgSize, filterSize, stride, pad);
-			programArgs = new String[]{"-explain", "-args",  "" + imgSize, "" + numImg, 
+			programArgs = new String[]{"-args",  "" + imgSize, "" + numImg, 
 					"" + numChannels, "" + numFilters, 
 					"" + filterSize, "" + stride, "" + pad,
 					"" + P, "" + P, 
 					output("B"), sparseVal1, sparseVal2};
-			        
+			
 			boolean exceptionExpected = false;
 			int expectedNumberOfJobs = -1;
 			runTest(true, exceptionExpected, null, expectedNumberOfJobs);
@@ -175,9 +174,9 @@ public class Conv2DBackwardDataTest extends AutomatedTestBase
 					" " + sparseVal1 + " " + sparseVal2;
 			// Run comparison R script
 			runRScript(true);
-			HashMap<CellIndex, Double> bHM = readRMatrixFromFS("B");
+			HashMap<CellIndex, Double> bHM = readRMatrixFromExpectedDir("B");
 			
-			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("B");
+			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("B");
 			TestUtils.compareMatrices(dmlfile, bHM, epsilon, "B-DML", "NumPy");
 			
 		}

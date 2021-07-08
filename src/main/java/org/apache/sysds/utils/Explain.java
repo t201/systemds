@@ -26,7 +26,9 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.List;
 import java.util.Map.Entry;
+import java.util.Stack;
 
+import org.apache.commons.lang3.mutable.MutableInt;
 import org.apache.sysds.hops.Hop;
 import org.apache.sysds.hops.LiteralOp;
 import org.apache.sysds.hops.OptimizerUtils;
@@ -65,6 +67,7 @@ import org.apache.sysds.runtime.instructions.spark.CheckpointSPInstruction;
 import org.apache.sysds.runtime.instructions.spark.ReblockSPInstruction;
 import org.apache.sysds.runtime.instructions.spark.SPInstruction;
 import org.apache.sysds.runtime.lineage.LineageItem;
+import org.apache.sysds.runtime.lineage.LineageItemUtils;
 
 public class Explain
 {
@@ -269,13 +272,20 @@ public class Explain
 			}
 
 			//show individual functions
-			for( Entry<String, FunctionProgramBlock> e : funcMap.entrySet() )
-			{
+			for( Entry<String, FunctionProgramBlock> e : funcMap.entrySet() ) {
 				String fkey = e.getKey();
 				FunctionProgramBlock fpb = e.getValue();
+				//explain optimized function
 				sb.append("----FUNCTION "+fkey+" [recompile="+fpb.isRecompileOnce()+"]\n");
 				for( ProgramBlock pb : fpb.getChildBlocks() )
 					sb.append( explainProgramBlock(pb,3) );
+				//explain unoptimized function
+				if( rtprog.containsFunctionProgramBlock(fkey, false) ) {
+					FunctionProgramBlock fpb2 = rtprog.getFunctionProgramBlock(fkey, false);
+					sb.append("----FUNCTION "+fkey+" (unoptimized) [recompile="+fpb2.isRecompileOnce()+"]\n");
+					for( ProgramBlock pb : fpb2.getChildBlocks() )
+						sb.append( explainProgramBlock(pb,3) );
+				}
 			}
 		}
 
@@ -337,28 +347,30 @@ public class Explain
 
 	public static String explainLineageItems( LineageItem[] lis, int level ) {
 		StringBuilder sb = new StringBuilder();
-		LineageItem.resetVisitStatus(lis);
+		LineageItem.resetVisitStatusNR(lis);
 		for( LineageItem li : lis )
-			sb.append(explainLineageItem(li, level));
-		LineageItem.resetVisitStatus(lis);
+			sb.append(explainLineageItemNR(li, level));
+		LineageItem.resetVisitStatusNR(lis);
 		return sb.toString();
 	}
 
 	public static String explain( LineageItem li ) {
-		li.resetVisitStatus();
+		li.resetVisitStatusNR();
 		String s = explain(li, 0);
-		s += rExplainDedupItems(li, new ArrayList<>());
-		li.resetVisitStatus();
+		//s += rExplainDedupItems(li, new ArrayList<>());
+		li.resetVisitStatusNR();
 		return s;
 	}
 
 	private static String explain( LineageItem li, int level ) {
-		li.resetVisitStatus();
-		String ret = explainLineageItem(li, level);
-		li.resetVisitStatus();
+		li.resetVisitStatusNR();
+		String ret = explainLineageItemNR(li, level);
+		li.resetVisitStatusNR();
 		return ret;
 	}
 	
+	@Deprecated
+	@SuppressWarnings("unused")
 	private static String rExplainDedupItems(LineageItem li, List<String> paths) {
 		if (li.isVisited())
 			return "";
@@ -595,13 +607,44 @@ public class Explain
 		return sb.toString();
 	}
 
-	/**
-	 * Do a post-order traverse through the Lineage Item DAG and explain each Hop
-	 *
-	 * @param li lineage item
-	 * @param level offset
-	 * @return string explanation of Lineage Item DAG
-	 */
+	private static String explainLineageItemNR(LineageItem item, int level) {
+		//NOTE: in contrast to similar non-recursive functions like resetVisitStatusNR,
+		// we maintain a more complex stack to ensure DFS ordering where current nodes
+		// are added after the subtree underneath is processed (backwards compatibility)
+		Stack<LineageItem> stackItem = new Stack<>();
+		Stack<MutableInt> stackPos = new Stack<>();
+		stackItem.push(item); stackPos.push(new MutableInt(0));
+		StringBuilder sb = new StringBuilder();
+		while( !stackItem.empty() ) {
+			LineageItem tmpItem = stackItem.peek();
+			MutableInt tmpPos = stackPos.peek();
+			//check ascent condition - no item processing
+			if( tmpItem.isVisited() ) {
+				stackItem.pop(); stackPos.pop();
+			}
+			//check ascent condition - append item
+			else if( tmpItem.getInputs() == null 
+				|| tmpItem.getOpcode().startsWith(LineageItemUtils.LPLACEHOLDER)
+				// don't trace beyond if a placeholder is found
+				|| tmpItem.getInputs().length <= tmpPos.intValue() ) {
+				sb.append(createOffset(level));
+				sb.append(tmpItem.toString());
+				sb.append('\n');
+				stackItem.pop(); stackPos.pop();
+				tmpItem.setVisited();
+			}
+			//check descent condition
+			else if( tmpItem.getInputs() != null ) {
+				stackItem.push(tmpItem.getInputs()[tmpPos.intValue()]);
+				tmpPos.increment();
+				stackPos.push(new MutableInt(0));
+			}
+		}
+		return sb.toString();
+	}
+	
+	@Deprecated
+	@SuppressWarnings("unused")
 	private static String explainLineageItem(LineageItem li, int level) {
 		if( li.isVisited())
 			return "";
@@ -883,7 +926,7 @@ public class Explain
 		}
 	}
 
-	private static String explainFunctionCallGraph(FunctionCallGraph fgraph, HashSet<String> fstack, String fkey, int level)
+	public static String explainFunctionCallGraph(FunctionCallGraph fgraph, HashSet<String> fstack, String fkey, int level)
 	{
 		StringBuilder builder = new StringBuilder();
 		String offset = createOffset(level);

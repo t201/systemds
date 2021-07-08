@@ -30,25 +30,18 @@ import org.apache.sysds.runtime.matrix.data.LibMatrixCUDA;
 import org.apache.sysds.runtime.matrix.data.LibMatrixCuMatMult;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
 import org.apache.sysds.runtime.matrix.operators.AggregateBinaryOperator;
-import org.apache.sysds.runtime.matrix.operators.AggregateOperator;
 import org.apache.sysds.runtime.matrix.operators.Operator;
 import org.apache.sysds.runtime.matrix.operators.ReorgOperator;
 import org.apache.sysds.utils.GPUStatistics;
 
 public class AggregateBinaryGPUInstruction extends GPUInstruction {
-	private CPOperand _input1 = null;
-	private CPOperand _input2 = null;
-	private CPOperand _output = null;
 	private boolean _isLeftTransposed;
 	private boolean _isRightTransposed;
 
 	private AggregateBinaryGPUInstruction(Operator op, CPOperand in1, CPOperand in2, CPOperand out, String opcode,
 			String istr, boolean leftTranspose, boolean rightTranspose) {
-		super(op, opcode, istr);
+		super(op, in1, in2, out, opcode, istr);
 		_gputype = GPUINSTRUCTION_TYPE.AggregateBinary;
-		_input1 = in1;
-		_input2 = in2;
-		_output = out;
 		_isLeftTransposed = leftTranspose;
 		_isRightTransposed = rightTranspose;
 	}
@@ -58,14 +51,13 @@ public class AggregateBinaryGPUInstruction extends GPUInstruction {
 		String opcode = parts[0];
 		if ( !opcode.equalsIgnoreCase("ba+*"))
  			throw new DMLRuntimeException("AggregateBinaryInstruction.parseInstruction():: Unknown opcode " + opcode);
-		InstructionUtils.checkNumFields( parts, 5 );
+		InstructionUtils.checkNumFields( parts, 6 );
 		CPOperand in1 = new CPOperand(parts[1]);
 		CPOperand in2 = new CPOperand(parts[2]);
 		CPOperand out = new CPOperand(parts[3]);
-		boolean isLeftTransposed = Boolean.parseBoolean(parts[4]);
-		boolean isRightTransposed = Boolean.parseBoolean(parts[5]);
-		AggregateOperator agg = new AggregateOperator(0, Plus.getPlusFnObject());
-		AggregateBinaryOperator aggbin = new AggregateBinaryOperator(Multiply.getMultiplyFnObject(), agg, 1);
+		boolean isLeftTransposed = Boolean.parseBoolean(parts[5]);
+		boolean isRightTransposed = Boolean.parseBoolean(parts[6]);
+		AggregateBinaryOperator aggbin = InstructionUtils.getMatMultOperator(1);
 		return new AggregateBinaryGPUInstruction(aggbin, in1, in2, out, opcode, str, isLeftTransposed, isRightTransposed);	
 	}
 
@@ -99,4 +91,5 @@ public class AggregateBinaryGPUInstruction extends GPUInstruction {
 		MatrixObject mo = ec.getMatrixObject(var);
 		return LibMatrixCUDA.isInSparseFormat(ec.getGPUContext(0), mo);
 	}
+
 }

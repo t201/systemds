@@ -27,7 +27,7 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.instructions.Instruction;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
@@ -160,13 +160,15 @@ public class FullSignTest extends AutomatedTestBase
 			runRScript(true); 
 		
 			//compare matrices 
-			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("B");
-			HashMap<CellIndex, Double> rfile  = readRMatrixFromFS("B");
+			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("B");
+			HashMap<CellIndex, Double> rfile  = readRMatrixFromExpectedDir("B");
 			TestUtils.compareMatrices(dmlfile, rfile, 0, "Stat-DML", "Stat-R");
 			
 			//check generated opcode
-			if( instType == ExecType.CP )
-				Assert.assertTrue("Missing opcode: sign", Statistics.getCPHeavyHitterOpCodes().contains("sign"));
+			if( instType == ExecType.CP ) {
+				Assert.assertTrue("Missing opcode: sign", Statistics.getCPHeavyHitterOpCodes().contains("sign") ||
+						Statistics.getCPHeavyHitterOpCodes().contains("gpu_sign") );
+			}
 			else if ( instType == ExecType.SPARK )
 				Assert.assertTrue("Missing opcode: "+Instruction.SP_INST_PREFIX+"sign", Statistics.getCPHeavyHitterOpCodes().contains(Instruction.SP_INST_PREFIX+"sign"));	
 		}

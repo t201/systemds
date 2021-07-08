@@ -22,42 +22,87 @@ package org.apache.sysds.runtime.instructions.fed;
 import org.apache.sysds.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysds.runtime.instructions.Instruction;
 import org.apache.sysds.runtime.matrix.operators.Operator;
+import org.apache.sysds.runtime.privacy.propagation.PrivacyPropagator;
 
 public abstract class FEDInstruction extends Instruction {
-	
+
 	public enum FEDType {
-		Init,
 		AggregateBinary,
 		AggregateUnary,
+		AggregateTernary,
 		Append,
-		Binary
+		Binary,
+		Ctable,
+		CumulativeAggregate,
+		Init,
+		MultiReturnParameterizedBuiltin,
+		MMChain,
+		MatrixIndexing,
+		Ternary,
+		Tsmm,
+		ParameterizedBuiltin,
+		Quaternary,
+		QSort,
+		QPick,
+		Reorg,
+		Reshape,
+		SpoofFused,
+		Unary
 	}
 	
+	public enum FederatedOutput {
+		FOUT, // forced federated output 
+		LOUT, // forced local output (consolidated in CP)
+		NONE; // runtime heuristics
+		public boolean isForcedFederated() {
+			return this == FOUT;
+		}
+		public boolean isForcedLocal() {
+			return this == LOUT;
+		}
+	}
+
 	protected final FEDType _fedType;
-	protected final Operator _optr;
-	
+	protected long _tid = -1; //main
+	protected FederatedOutput _fedOut = FederatedOutput.NONE;
+
 	protected FEDInstruction(FEDType type, String opcode, String istr) {
 		this(type, null, opcode, istr);
 	}
-	
+
 	protected FEDInstruction(FEDType type, Operator op, String opcode, String istr) {
+		this(type, op, opcode, istr, FederatedOutput.NONE);
+	}
+
+	protected FEDInstruction(FEDType type, Operator op, String opcode, String istr, FederatedOutput fedOut) {
+		super(op);
 		_fedType = type;
-		_optr = op;
 		instString = istr;
 		instOpcode = opcode;
+		_fedOut = fedOut;
 	}
-	
+
 	@Override
 	public IType getType() {
 		return IType.FEDERATED;
 	}
-	
+
 	public FEDType getFEDInstructionType() {
 		return _fedType;
 	}
-	
+
+	public long getTID() {
+		return _tid;
+	}
+
+	public void setTID(long tid) {
+		_tid = tid;
+	}
+
 	@Override
 	public Instruction preprocessInstruction(ExecutionContext ec) {
-		return super.preprocessInstruction(ec);
+		Instruction tmp = super.preprocessInstruction(ec);
+		tmp = PrivacyPropagator.preprocessInstruction(tmp, ec);
+		return tmp;
 	}
 }

@@ -21,20 +21,17 @@ package org.apache.sysds.lops;
 
 import java.util.HashMap;
 
-import org.apache.sysds.lops.LopProperties.ExecType;
-import org.apache.sysds.parser.DataExpression;
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.FileFormat;
 import org.apache.sysds.common.Types.OpOpData;
 import org.apache.sysds.common.Types.ValueType;
-
-
+import org.apache.sysds.common.Types.ExecType;
+import org.apache.sysds.parser.DataExpression;
 
 /**
  * Lop to represent data objects. Data objects represent matrices, vectors, 
  * variables, literals. Can be for both input and output. 
  */
-
 public class Data extends Lop
 {
 	public static final String PREAD_PREFIX = "pREAD";
@@ -54,7 +51,7 @@ public class Data extends Lop
 		// All literals have default format type of TEXT
 		return new Data(OpOpData.PERSISTENTREAD, null, null, null, literalValue, DataType.SCALAR, vt, FileFormat.BINARY);
 	}
-	
+
 	/**
 	 * Constructor to setup read or write LOP
 	 * In case of write: <code>input</code> must be provided. This will always be added as the first element in <code>input</code> array.
@@ -69,8 +66,8 @@ public class Data extends Lop
 	 * @param vt value type
 	 * @param fmt file format
 	 */
-	public Data(OpOpData op, Lop input, HashMap<String, Lop> 
-	inputParametersLops, String name, String literal, DataType dt, ValueType vt, FileFormat fmt) 
+	public Data(OpOpData op, Lop input, HashMap<String, Lop>
+	inputParametersLops, String name, String literal, DataType dt, ValueType vt, FileFormat fmt)
 	{
 		super(Lop.Type.Data, dt, vt);
 		_op = op;
@@ -102,15 +99,15 @@ public class Data extends Lop
 			addInput(input);
 			input.addOutput(this);
 		}
-		
+
 		_inputParams = inputParametersLops;
-		
+
 		if ( _inputParams != null ) {
 			for (Lop lop : inputParametersLops.values()) {
 				addInput(lop);
 				lop.addOutput(this);
 			}
-			if (   inputParametersLops.get(DataExpression.IO_FILENAME)!= null 
+			if (   inputParametersLops.get(DataExpression.IO_FILENAME)!= null
 				&& inputParametersLops.get(DataExpression.IO_FILENAME) instanceof Data )
 			{
 				OutputParameters outParams = ((Data)inputParametersLops.get(DataExpression.IO_FILENAME)).getOutputParameters();
@@ -118,7 +115,7 @@ public class Data extends Lop
 				this.getOutputParameters().setFile_name(fName);
 			}
 		}
-		
+
 		//set output format
 		formatType = fmt;
 		outParams.setFormat(fmt);
@@ -128,11 +125,11 @@ public class Data extends Lop
 	private void setLopProperties() {
 		lps.setProperties ( inputs, ExecType.INVALID);
 	}
-	
+
 	/**
 	 * Data-Lop-specific method to set the execution type for persistent write.
-	 * TODO: split lops into MR/CP lop. 
-	 * 
+	 * TODO: split lops into MR/CP lop.
+	 *
 	 * @param et execution type
 	 */
 	public void setExecType( ExecType et ) {
@@ -140,13 +137,13 @@ public class Data extends Lop
 	}
 
 	/**
-	 * method to get format type for input, output files. 
+	 * method to get format type for input, output files.
 	 * @return file format
 	 */
 	public FileFormat getFileFormatType() {
 		return formatType ;
 	}
- 
+
 	@Override
 	public String toString() {
 		return getID() + ":" + "File_Name: " + getOutputParameters().getFile_name() + " "
@@ -160,30 +157,30 @@ public class Data extends Lop
 	 * method to get operation type, i.e. read/write.
 	 * @return operation type
 	 */
-	 
+
 	public OpOpData getOperationType() {
 		return _op;
 	}
-	
+
 	/**
-	 * method to get inputParams 
+	 * method to get inputParams
 	 * @return input parameters
 	 */
 	public HashMap<String, Lop> getInputParams(){
 		return _inputParams;
 	}
-	
+
 	public Lop getNamedInputLop(String name) {
 		return _inputParams.get(name);
 	}
-	
+
 	public Lop getNamedInputLop(String name, String defaultVal) {
 		if( _inputParams.containsKey(name) )
 			return _inputParams.get(name);
 		else
 			return Data.createLiteralLop(ValueType.STRING, defaultVal);
 	}
-	
+
 	/**
 	 * method to check if this data lop represents a literal.
 	 * @return true if data lop is a literal
@@ -191,7 +188,7 @@ public class Data extends Lop
 	public boolean isLiteral() {
 		return literal_var;
 	}
-	
+
 	public boolean getBooleanValue() {
 		if(literal_var) {
 			return Boolean.parseBoolean(getOutputParameters().getLabel());
@@ -199,7 +196,7 @@ public class Data extends Lop
 		else
 			throw new LopsException("Cannot obtain the value of a non-literal variable at compile time.");
 	}
-	
+
 	public double getDoubleValue() {
 		if(literal_var) {
 			return Double.parseDouble(getOutputParameters().getLabel());
@@ -207,7 +204,7 @@ public class Data extends Lop
 		else
 			throw new LopsException("Cannot obtain the value of a non-literal variable at compile time.");
 	}
-	
+
 	public long getLongValue() {
 		if(literal_var) {
 			ValueType vt = getValueType();
@@ -216,7 +213,7 @@ public class Data extends Lop
 				return Long.parseLong(getOutputParameters().getLabel());
 			case FP64:
 				return (long) Double.parseDouble(getOutputParameters().getLabel());
-			
+
 			default:
 				throw new LopsException("Encountered a non-numeric value " + (vt) + ", while a numeric value is expected.");
 			}
@@ -224,7 +221,7 @@ public class Data extends Lop
 		else
 			throw new LopsException("Can not obtain the value of a non-literal variable at compile time.");
 	}
-	
+
 	public String getStringValue() {
 		if(literal_var) {
 			return getOutputParameters().getLabel();
@@ -232,28 +229,28 @@ public class Data extends Lop
 		else
 			throw new LopsException("Cannot obtain the value of a non-literal variable at compile time.");
 	}
-	
+
 	public boolean isPersistentWrite() {
 		return _op == OpOpData.PERSISTENTWRITE;
 	}
-	
+
 	public boolean isPersistentRead() {
 		return _op == OpOpData.PERSISTENTREAD
 			&& !literal_var;
 	}
-	
+
 	/**
 	 * Method to get CP instructions for reading/writing scalars and matrices from/to HDFS.
 	 * This method generates CP read/write instructions.
 	 */
 	@Override
-	public String getInstructions(String input1, String input2) 
+	public String getInstructions(String input1, String input2)
 	{
-		if ( getOutputParameters().getFile_name() == null && _op.isRead() ) 
+		if ( getOutputParameters().getFile_name() == null && _op.isRead() )
 			throw new LopsException(this.printErrorLocation() + "Data.getInstructions(): Exepecting a SCALAR data type, encountered " + getDataType());
-			
+
 		StringBuilder sb = new StringBuilder();
-		if(this.getExecType() == ExecType.SPARK)  
+		if(this.getExecType() == ExecType.SPARK)
 			sb.append( "SPARK" );
 		else
 			sb.append( "CP" );
@@ -270,12 +267,12 @@ public class Data extends Lop
 		}
 		else
 			throw new LopsException(this.printErrorLocation() + "In Data Lop, Unknown operation: " + _op);
-		
+
 		sb.append( OPERAND_DELIMITOR );
 		Lop fnameLop = _inputParams.get(DataExpression.IO_FILENAME);
 		boolean literal = (fnameLop instanceof Data && ((Data)fnameLop).isLiteral());
-		sb.append ( prepOperand(input2, DataType.SCALAR,  ValueType.STRING, literal) ); 
-		
+		sb.append ( prepOperand(input2, DataType.SCALAR,  ValueType.STRING, literal) );
+
 		// attach outputInfo in case of matrices
 		OutputParameters oparams = getOutputParameters();
 		if ( _op.isWrite() ) {
@@ -285,14 +282,14 @@ public class Data extends Lop
 				fmt = oparams.getFormat().toString();
 			else // scalars will always be written in text format
 				fmt = FileFormat.TEXT.toString();
-			
+
 			sb.append( prepOperand(fmt, DataType.SCALAR, ValueType.STRING, true));
-			
+
 			if(oparams.getFormat() == FileFormat.CSV) {
 				Data headerLop = (Data) getNamedInputLop(DataExpression.DELIM_HAS_HEADER_ROW);
 				Data delimLop = (Data) getNamedInputLop(DataExpression.DELIM_DELIMITER);
 				Data sparseLop = (Data) getNamedInputLop(DataExpression.DELIM_SPARSE);
-				
+
 				if (headerLop.isVariable())
 					throw new LopsException(this.printErrorLocation()
 							+ "Parameter " + DataExpression.DELIM_HAS_HEADER_ROW
@@ -305,33 +302,67 @@ public class Data extends Lop
 					throw new LopsException(this.printErrorLocation()
 							+ "Parameter " + DataExpression.DELIM_SPARSE
 							+ " must be a literal for a seq operation.");
-				
+
 				sb.append(OPERAND_DELIMITOR);
 				sb.append(headerLop.getBooleanValue());
 				sb.append(OPERAND_DELIMITOR);
 				sb.append(delimLop.getStringValue());
 				sb.append(OPERAND_DELIMITOR);
 				sb.append(sparseLop.getBooleanValue());
-				
-				if ( this.getExecType() == ExecType.SPARK ) 
+
+				if ( this.getExecType() == ExecType.SPARK )
 				{
 					sb.append(OPERAND_DELIMITOR);
 					sb.append(true); //isInputMatrixBlock
 				}
 			}
-			
+
 			if(oparams.getFormat() == FileFormat.LIBSVM) {
+				Data delimLop = (Data) getNamedInputLop(DataExpression.DELIM_DELIMITER);
+				Data indexDelimLop = (Data) getNamedInputLop(DataExpression.LIBSVM_INDEX_DELIM);
 				Data sparseLop = (Data) getNamedInputLop(DataExpression.DELIM_SPARSE);
-				
+
+				if(delimLop.isVariable())
+					throw new LopsException(
+						this.printErrorLocation() + "Parameter " + DataExpression.DELIM_DELIMITER + " must be a literal for a seq operation.");
+
+				if(indexDelimLop.isVariable())
+					throw new LopsException(
+						this.printErrorLocation() + "Parameter " + DataExpression.LIBSVM_INDEX_DELIM + " must be a literal for a seq operation.");
+
 				if (sparseLop.isVariable())
 					throw new LopsException(this.printErrorLocation()
 							+ "Parameter " + DataExpression.DELIM_SPARSE
 							+ " must be a literal for a seq operation.");
 
 				sb.append(OPERAND_DELIMITOR);
+				sb.append(delimLop.getStringValue());
+				sb.append(OPERAND_DELIMITOR);
+				sb.append(indexDelimLop.getStringValue());
+				sb.append(OPERAND_DELIMITOR);
 				sb.append(sparseLop.getBooleanValue());
+
+				if(this.getExecType() == ExecType.SPARK) {
+					sb.append(OPERAND_DELIMITOR);
+					sb.append(true); //isInputMatrixBlock
+				}
 			}
-			
+
+			if(oparams.getFormat() == FileFormat.HDF5) {
+				Data datasetNameLop = (Data) getNamedInputLop(DataExpression.HDF5_DATASET_NAME);
+				if(datasetNameLop.isVariable())
+					throw new LopsException(
+						this.printErrorLocation() + "Parameter " + DataExpression.HDF5_DATASET_NAME + " must be a literal for a seq operation.");
+
+				sb.append(OPERAND_DELIMITOR);
+				sb.append(datasetNameLop.getStringValue());
+
+				if(this.getExecType() == ExecType.SPARK) {
+					sb.append(OPERAND_DELIMITOR);
+					sb.append(true); //isInputMatrixBlock
+				}
+			}
+
 		}
 
 		if (_op.isWrite()) {
@@ -344,40 +375,42 @@ public class Data extends Lop
 			} else {
 				sb.append(prepOperand("", DataType.SCALAR, ValueType.STRING, true));
 			}
+			sb.append(OPERAND_DELIMITOR);
+			sb.append(oparams.getBlocksize());
 		}
 
 		return sb.toString();
 	}
-	
+
 	/**
 	 * Method to generate createvar instruction that updates symbol table with metadata, hdfsfile name, etc.
-	 * 
+	 *
 	 */
 	@Override
 	public String getInstructions() {
 		return getCreateVarInstructions(getOutputParameters().getFile_name(), getOutputParameters().getLabel());
 	}
-	
+
 	@Override
 	public String getInstructions(String outputFileName) {
 		return getCreateVarInstructions(outputFileName, getOutputParameters().getLabel() );
 	}
-	
+
 	public String getCreateVarInstructions(String outputFileName, String outputLabel) {
-		if ( getDataType() == DataType.MATRIX || getDataType() == DataType.FRAME ) {
-			
+		if ( getDataType() == DataType.MATRIX || getDataType() == DataType.FRAME || getDataType() == DataType.LIST ) {
+
 			if ( _op.isTransient() )
 				throw new LopsException("getInstructions() should not be called for transient nodes.");
-			
+
 			OutputParameters oparams = getOutputParameters();
-			
+
 			StringBuilder sb = new StringBuilder();
 			sb.append( "CP" );
 			sb.append( OPERAND_DELIMITOR );
 			sb.append( "createvar" );
-			sb.append( OPERAND_DELIMITOR ); 
+			sb.append( OPERAND_DELIMITOR );
 			sb.append( outputLabel );
-			sb.append( OPERAND_DELIMITOR ); 
+			sb.append( OPERAND_DELIMITOR );
 			sb.append( outputFileName );
 			sb.append( OPERAND_DELIMITOR );
 			sb.append( false );
@@ -395,35 +428,41 @@ public class Data extends Lop
 			sb.append( oparams.getNnz() );
 			sb.append( OPERAND_DELIMITOR );
 			sb.append( oparams.getUpdateType().toString().toLowerCase() );
-			
+
 			// Format-specific properties
 			if ( oparams.getFormat() == FileFormat.CSV ) {
 				sb.append( OPERAND_DELIMITOR );
 				sb.append( createVarCSVHelper() );
 			}
 			// Format-specific properties
-			if ( oparams.getFormat() == FileFormat.LIBSVM ) { 
+			if ( oparams.getFormat() == FileFormat.LIBSVM ) {
+				sb.append(OPERAND_DELIMITOR);
 				sb.append( createVarLIBSVMHelper() );
 			}
-			
+
+			// Format-specific properties
+			if ( oparams.getFormat() == FileFormat.HDF5 ) {
+				sb.append(OPERAND_DELIMITOR);
+				sb.append( createVarHDF5Helper() );
+			}
+
 			// Frame-specific properties
 			if( getDataType()==DataType.FRAME ) {
 				Data schema = (Data) getNamedInputLop(DataExpression.SCHEMAPARAM);
 				sb.append( OPERAND_DELIMITOR );
 				sb.append( (schema!=null) ? schema.prepScalarLabel() : "*" );
 			}
-			
 			return sb.toString();
 		}
 		else {
 			throw new LopsException(this.printErrorLocation() + "In Data Lop, Unexpected data type " + getDataType());
 		}
 	}
-	
+
 	/**
 	 * Helper function that attaches CSV format-specific properties to createvar instruction.
 	 * The set of properties that are attached for a READ operation is different from that for a WRITE operation.
-	 * 
+	 *
 	 * @return instruction with csv format properties appended
 	 */
 	private String createVarCSVHelper() {
@@ -431,10 +470,10 @@ public class Data extends Lop
 		if ( _op.isRead() ) {
 			Data headerLop = (Data) getNamedInputLop(DataExpression.DELIM_HAS_HEADER_ROW);
 			Data delimLop = (Data) getNamedInputLop(DataExpression.DELIM_DELIMITER);
-			Data fillLop = (Data) getNamedInputLop(DataExpression.DELIM_FILL); 
+			Data fillLop = (Data) getNamedInputLop(DataExpression.DELIM_FILL);
 			Data fillValueLop = (Data) getNamedInputLop(DataExpression.DELIM_FILL_VALUE);
-			Data naLop = (Data) getNamedInputLop(DataExpression.DELIM_NA_STRINGS);
-			
+			Lop naLop = getNamedInputLop(DataExpression.DELIM_NA_STRINGS);
+
 			sb.append(headerLop.getBooleanValue());
 			sb.append(OPERAND_DELIMITOR);
 			sb.append(delimLop.getStringValue());
@@ -444,14 +483,23 @@ public class Data extends Lop
 			sb.append(fillValueLop.getDoubleValue());
 			if ( naLop != null ) {
 				sb.append(OPERAND_DELIMITOR);
-				sb.append(naLop.getStringValue());
+				if(naLop instanceof Nary){
+					Nary naLops = (Nary) naLop;
+					for(Lop na : naLops.getInputs()){
+						sb.append(((Data)na).getStringValue());
+						sb.append(DataExpression.DELIM_NA_STRING_SEP);
+					}
+				} else if (naLop instanceof Data){
+
+					sb.append(((Data)naLop).getStringValue());
+				}
 			}
 		}
-		else { // (operation == OperationTypes.WRITE) 
+		else { // (operation == OperationTypes.WRITE)
 			Data headerLop = (Data) getNamedInputLop(DataExpression.DELIM_HAS_HEADER_ROW);
 			Data delimLop = (Data) getNamedInputLop(DataExpression.DELIM_DELIMITER);
-			Data sparseLop = (Data) getNamedInputLop(DataExpression.DELIM_SPARSE); 
-			
+			Data sparseLop = (Data) getNamedInputLop(DataExpression.DELIM_SPARSE);
+
 			if (headerLop.isVariable())
 				throw new LopsException(this.printErrorLocation()
 						+ "Parameter " + DataExpression.DELIM_HAS_HEADER_ROW
@@ -464,7 +512,7 @@ public class Data extends Lop
 				throw new LopsException(this.printErrorLocation()
 						+ "Parameter " + DataExpression.DELIM_SPARSE
 						+ " must be a literal for a seq operation.");
-			
+
 			sb.append(headerLop.getBooleanValue());
 			sb.append(OPERAND_DELIMITOR);
 			sb.append(delimLop.getStringValue());
@@ -477,23 +525,56 @@ public class Data extends Lop
 	private String createVarLIBSVMHelper() {
 		StringBuilder sb = new StringBuilder();
 		if ( _op.isRead() ) {
-			Data naLop = (Data) getNamedInputLop(DataExpression.DELIM_NA_STRINGS);
-			
-			if ( naLop != null ) {
+			Data delimLop = (Data) getNamedInputLop(DataExpression.DELIM_DELIMITER);
+			Data indexDelimlLop = (Data) getNamedInputLop(DataExpression.LIBSVM_INDEX_DELIM);
+
+			sb.append(delimLop.getStringValue());
 				sb.append(OPERAND_DELIMITOR);
-				sb.append(naLop.getStringValue());
-			}
+			sb.append(indexDelimlLop.getStringValue());
+			sb.append(OPERAND_DELIMITOR);
 		}
-		else { // (operation == OperationTypes.WRITE) 
-			Data sparseLop = (Data) getNamedInputLop(DataExpression.DELIM_SPARSE); 
-			
+		else { // (operation == OperationTypes.WRITE)
+			Data delimLop = (Data) getNamedInputLop(DataExpression.DELIM_DELIMITER);
+			Data indexDelimLop = (Data) getNamedInputLop(DataExpression.LIBSVM_INDEX_DELIM);
+			Data sparseLop = (Data) getNamedInputLop(DataExpression.DELIM_SPARSE);
+
+			if(delimLop.isVariable())
+				throw new LopsException(
+					this.printErrorLocation() + "Parameter " + DataExpression.DELIM_DELIMITER + " must be a literal for a seq operation.");
+
+			if(indexDelimLop.isVariable())
+				throw new LopsException(
+					this.printErrorLocation() + "Parameter " + DataExpression.LIBSVM_INDEX_DELIM + " must be a literal for a seq operation.");
+
 			if (sparseLop.isVariable())
 				throw new LopsException(this.printErrorLocation()
 						+ "Parameter " + DataExpression.DELIM_SPARSE
 						+ " must be a literal for a seq operation.");
-			
+
+			sb.append(delimLop.getStringValue());
+			sb.append(OPERAND_DELIMITOR);
+			sb.append(indexDelimLop.getStringValue());
 			sb.append(OPERAND_DELIMITOR);
 			sb.append(sparseLop.getBooleanValue());
+		}
+		return sb.toString();
+	}
+
+	private String createVarHDF5Helper() {
+		StringBuilder sb = new StringBuilder();
+		if ( _op.isRead() ) {
+			Data datasetNameLop = (Data) getNamedInputLop(DataExpression.HDF5_DATASET_NAME);
+			sb.append(datasetNameLop.getStringValue());
+			sb.append(OPERAND_DELIMITOR);
+		}
+		else { // (operation == OperationTypes.WRITE)
+			Data datasetNameLop = (Data) getNamedInputLop(DataExpression.HDF5_DATASET_NAME);
+			if(datasetNameLop.isVariable())
+				throw new LopsException(
+					this.printErrorLocation() + "Parameter " + DataExpression.HDF5_DATASET_NAME + " must be a literal for a seq operation.");
+
+			sb.append(datasetNameLop.getStringValue());
+			sb.append(OPERAND_DELIMITOR);
 		}
 		return sb.toString();
 	}

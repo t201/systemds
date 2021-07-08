@@ -41,8 +41,9 @@ public abstract class BinaryCPInstruction extends ComputationCPInstruction {
 		CPOperand in2 = new CPOperand("", ValueType.UNKNOWN, DataType.UNKNOWN);
 		CPOperand out = new CPOperand("", ValueType.UNKNOWN, DataType.UNKNOWN);
 		String opcode = parseBinaryInstruction(str, in1, in2, out);
-		
-		checkOutputDataType(in1, in2, out);
+
+		if(!(in1.getDataType() == DataType.FRAME || in2.getDataType() == DataType.FRAME))
+			checkOutputDataType(in1, in2, out);
 		
 		Operator operator = InstructionUtils.parseBinaryOrBuiltinOperator(opcode, in1, in2);
 
@@ -54,13 +55,17 @@ public abstract class BinaryCPInstruction extends ComputationCPInstruction {
 			return new BinaryTensorTensorCPInstruction(operator, in1, in2, out, opcode, str);
 		else if (in1.getDataType() == DataType.FRAME && in2.getDataType() == DataType.FRAME)
 			return new BinaryFrameFrameCPInstruction(operator, in1, in2, out, opcode, str);
+		else if (in1.getDataType() == DataType.FRAME && in2.getDataType() == DataType.MATRIX)
+			return new BinaryFrameMatrixCPInstruction(operator, in1, in2, out, opcode, str);
+		else if (in1.getDataType() == DataType.FRAME && in2.getDataType() == DataType.SCALAR)
+			return new BinaryFrameScalarCPInstruction(operator, in1, in2, out, opcode, str);
 		else
 			return new BinaryMatrixScalarCPInstruction(operator, in1, in2, out, opcode, str);
 	}
 	
 	protected static String parseBinaryInstruction(String instr, CPOperand in1, CPOperand in2, CPOperand out) {
 		String[] parts = InstructionUtils.getInstructionPartsWithValueType(instr);
-		InstructionUtils.checkNumFields ( parts, 3 );
+		InstructionUtils.checkNumFields ( parts, 3, 4 );
 		String opcode = parts[0];
 		in1.split(parts[1]);
 		in2.split(parts[2]);

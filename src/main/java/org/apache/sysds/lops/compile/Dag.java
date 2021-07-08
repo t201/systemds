@@ -30,7 +30,7 @@ import org.apache.sysds.lops.Data;
 import org.apache.sysds.lops.FunctionCallCP;
 import org.apache.sysds.lops.Lop;
 import org.apache.sysds.lops.Lop.Type;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.lops.LopsException;
 import org.apache.sysds.lops.OutputParameters;
 import org.apache.sysds.parser.DataExpression;
@@ -343,7 +343,8 @@ public class Dag<N extends Lop>
 			if (n.isDataExecLocation() 
 				&& !((Data) n).getOperationType().isTransient()
 				&& ((Data) n).getOperationType().isRead()
-				&& (n.getDataType() == DataType.MATRIX || n.getDataType() == DataType.FRAME) )
+				&& (n.getDataType() == DataType.MATRIX || n.getDataType() == DataType.FRAME 
+				   || n.getDataType() == DataType.LIST) )
 			{
 				if ( !((Data)n).isLiteral() ) {
 					try {
@@ -775,7 +776,7 @@ public class Dag<N extends Lop>
 				//String createInst = prepareVariableInstruction("createvar", node);
 				//out.addPreInstruction(CPInstructionParser.parseSingleInstruction(createInst));
 				int blen = (int) oparams.getBlocksize();
-				Instruction createvarInst = VariableCPInstruction.prepareCreateVariableInstruction(
+				Instruction createvarInst = VariableCPInstruction.prepCreatevarInstruction(
 					oparams.getLabel(), oparams.getFile_name(), true, node.getDataType(),
 					getOutputFileFormat(node, false).toString(),
 					new MatrixCharacteristics(oparams.getNumRows(), oparams.getNumCols(), blen, oparams.getNnz()),
@@ -803,7 +804,7 @@ public class Dag<N extends Lop>
 					for( Lop fnOut: fcall.getFunctionOutputs()) {
 						OutputParameters fnOutParams = fnOut.getOutputParameters();
 						//OutputInfo oinfo = getOutputInfo((N)fnOut, false);
-						Instruction createvarInst = VariableCPInstruction.prepareCreateVariableInstruction(
+						Instruction createvarInst = VariableCPInstruction.prepCreatevarInstruction(
 							fnOutParams.getLabel(), getFilePath() + fnOutParams.getLabel(), 
 							true, fnOut.getDataType(), getOutputFileFormat(fnOut, false).toString(),
 							new MatrixCharacteristics(fnOutParams.getNumRows(), fnOutParams.getNumCols(), (int)fnOutParams.getBlocksize(), fnOutParams.getNnz()),
@@ -913,7 +914,7 @@ public class Dag<N extends Lop>
 						String tempFileName = getNextUniqueFilename();
 						
 						int blen = (int) oparams.getBlocksize();
-						Instruction createvarInst = VariableCPInstruction.prepareCreateVariableInstruction(
+						Instruction createvarInst = VariableCPInstruction.prepCreatevarInstruction(
 							tempVarName, tempFileName, true, node.getDataType(), out.getOutInfo().toString(), 
 							new MatrixCharacteristics(oparams.getNumRows(), oparams.getNumCols(), blen, oparams.getNnz()),
 							oparams.getUpdateType());
@@ -946,7 +947,7 @@ public class Dag<N extends Lop>
 						
 						// Generate a single mvvar instruction (e.g., mvvar tempA A) 
 						//    instead of two instructions "cpvar tempA A" and "rmvar tempA"
-						Instruction currInstr = VariableCPInstruction.prepareMoveInstruction(tempVarName, constVarName);
+						Instruction currInstr = VariableCPInstruction.prepMoveInstruction(tempVarName, constVarName);
 						
 						currInstr.setLocation(node);
 						
@@ -1010,7 +1011,7 @@ public class Dag<N extends Lop>
 					&& ((VariableCPInstruction)inst2).isRemoveVariableNoFile()
 					&& inst1.getInput1().getName().equals(
 						((VariableCPInstruction)inst2).getInput1().getName()) ) {
-					ret.add(VariableCPInstruction.prepareMoveInstruction(
+					ret.add(VariableCPInstruction.prepMoveInstruction(
 						inst1.getInput1().getName(), inst1.getInput2().getName()));
 				}
 				else {

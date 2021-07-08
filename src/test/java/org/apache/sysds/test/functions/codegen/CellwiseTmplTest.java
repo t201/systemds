@@ -22,18 +22,22 @@ package org.apache.sysds.test.functions.codegen;
 import java.io.File;
 import java.util.HashMap;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.sysds.common.Types.ExecMode;
 import org.apache.sysds.hops.OptimizerUtils;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
 import org.apache.sysds.test.TestUtils;
+import org.junit.Assert;
+import org.junit.Test;
 
 public class CellwiseTmplTest extends AutomatedTestBase 
 {
+	private static final Log LOG = LogFactory.getLog(CellwiseTmplTest.class.getName());
+
 	private static final String TEST_NAME = "cellwisetmpl";
 	private static final String TEST_NAME1 = TEST_NAME+1;
 	private static final String TEST_NAME2 = TEST_NAME+2;
@@ -167,15 +171,10 @@ public class CellwiseTmplTest extends AutomatedTestBase
 	}
 	
 	@Test
-	public void testCodegenCellwise4() 
-	{
-		testCodegenIntegration( TEST_NAME4, false, ExecType.CP  );
-	}
+	public void testCodegenCellwise4() { testCodegenIntegration( TEST_NAME4, false, ExecType.CP ); }
 	
 	@Test
-	public void testCodegenCellwise5() {
-		testCodegenIntegration( TEST_NAME5, false, ExecType.CP  );
-	}
+	public void testCodegenCellwise5() { testCodegenIntegration( TEST_NAME5, false, ExecType.CP  );	}
 	
 	@Test
 	public void testCodegenCellwise6() {
@@ -188,9 +187,7 @@ public class CellwiseTmplTest extends AutomatedTestBase
 	}
 	
 	@Test
-	public void testCodegenCellwise8() {
-		testCodegenIntegration( TEST_NAME8, false, ExecType.CP  );
-	}
+	public void testCodegenCellwise8() { testCodegenIntegration( TEST_NAME8, false, ExecType.CP  );	}
 	
 	@Test
 	public void testCodegenCellwise9() {
@@ -477,7 +474,7 @@ public class CellwiseTmplTest extends AutomatedTestBase
 			
 			String HOME = SCRIPT_DIR + TEST_DIR;
 			fullDMLScriptName = HOME + testname + ".dml";
-			programArgs = new String[]{"-explain", "-stats", "-args", output("S") };
+			programArgs = new String[]{"-stats", "-args", output("S") };
 			
 			fullRScriptName = HOME + testname + ".R";
 			rCmd = getRCmd(inputDir(), expectedDir());
@@ -485,26 +482,26 @@ public class CellwiseTmplTest extends AutomatedTestBase
 			OptimizerUtils.ALLOW_ALGEBRAIC_SIMPLIFICATION = rewrites;
 
 			runTest(true, false, null, -1); 
-			runRScript(true); 
-			
+			runRScript(true);
+
 			if(testname.equals(TEST_NAME6) || testname.equals(TEST_NAME7) 
 				|| testname.equals(TEST_NAME9) || testname.equals(TEST_NAME10)) {
 				//compare scalars 
-				HashMap<CellIndex, Double> dmlfile = readDMLScalarFromHDFS("S");
-				HashMap<CellIndex, Double> rfile  = readRScalarFromFS("S");
+				HashMap<CellIndex, Double> dmlfile = readDMLScalarFromOutputDir("S");
+				HashMap<CellIndex, Double> rfile  = readRScalarFromExpectedDir("S");
 				TestUtils.compareScalars((Double) dmlfile.values().toArray()[0], (Double) rfile.values().toArray()[0],0);
 			}
 			else {
 				//compare matrices 
-				HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("S");
-				HashMap<CellIndex, Double> rfile  = readRMatrixFromFS("S");
+				HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("S");
+				HashMap<CellIndex, Double> rfile  = readRMatrixFromExpectedDir("S");
 				TestUtils.compareMatrices(dmlfile, rfile, eps, "Stat-DML", "Stat-R");
 			}
 			
 			if( !(rewrites && (testname.equals(TEST_NAME2)
 				|| testname.equals(TEST_NAME19))) && !testname.equals(TEST_NAME27) )
 				Assert.assertTrue(heavyHittersContainsSubString(
-						"spoofCell", "sp_spoofCell", "spoofMA", "sp_spoofMA"));
+						"spoofCell", "sp_spoofCell", "spoofMA", "sp_spoofMA", "gpu_spoofCUDACell"));
 			if( testname.equals(TEST_NAME7) ) //ensure matrix mult is fused
 				Assert.assertTrue(!heavyHittersContainsSubString("tsmm"));
 			else if( testname.equals(TEST_NAME10) ) //ensure min/max is fused
@@ -539,7 +536,7 @@ public class CellwiseTmplTest extends AutomatedTestBase
 	protected File getConfigTemplateFile() {
 		// Instrumentation in this test's output log to show custom configuration file used for template.
 		File TEST_CONF_FILE = new File(SCRIPT_DIR + TEST_DIR, TEST_CONF);
-		System.out.println("This test case overrides default configuration with " + TEST_CONF_FILE.getPath());
+		LOG.info("This test case overrides default configuration with " + TEST_CONF_FILE.getPath());
 		return TEST_CONF_FILE;
 	}
 }

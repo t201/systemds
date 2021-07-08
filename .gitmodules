@@ -1,0 +1,4 @@
+[submodule "src/main/cuda/ext/jitify"]
+	path = src/main/cuda/ext/jitify
+	url = git@github.com:corepointer/jitify.git
+	branch = win_compile_fix

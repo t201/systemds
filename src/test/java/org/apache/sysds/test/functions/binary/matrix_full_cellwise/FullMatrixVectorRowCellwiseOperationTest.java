@@ -26,7 +26,7 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
@@ -34,7 +34,6 @@ import org.apache.sysds.test.TestUtils;
 
 public class FullMatrixVectorRowCellwiseOperationTest extends AutomatedTestBase 
 {
-	
 	private final static String TEST_NAME1 = "FullMatrixVectorRowCellwiseOperation_Addition";
 	private final static String TEST_NAME2 = "FullMatrixVectorRowCellwiseOperation_Substraction";
 	private final static String TEST_NAME3 = "FullMatrixVectorRowCellwiseOperation_Multiplication";
@@ -578,7 +577,7 @@ public class FullMatrixVectorRowCellwiseOperationTest extends AutomatedTestBase
 			/* This is for running the junit test the new way, i.e., construct the arguments directly */
 			String HOME = SCRIPT_DIR + TEST_DIR;
 			fullDMLScriptName = HOME + TEST_NAME + ".dml";
-			programArgs = new String[]{"-explain","recompile_runtime","-args",
+			programArgs = new String[]{"-args",
 				input("A"), input("B"), output("C") };
 			
 			fullRScriptName = HOME + TEST_NAME + ".R";
@@ -598,8 +597,8 @@ public class FullMatrixVectorRowCellwiseOperationTest extends AutomatedTestBase
 				runRScript(true); 
 			
 				//compare matrices 
-				HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("C");
-				HashMap<CellIndex, Double> rfile  = readRMatrixFromFS("C");
+				HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("C");
+				HashMap<CellIndex, Double> rfile  = readRMatrixFromExpectedDir("C");
 				TestUtils.compareMatrices(dmlfile, rfile, eps, "Stat-DML", "Stat-R");
 			}
 			else

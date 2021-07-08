@@ -20,10 +20,14 @@
 package org.apache.sysds.runtime.controlprogram;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.stream.Collectors;
 
 import org.apache.sysds.api.DMLScript;
+import org.apache.sysds.common.Types.ExecMode;
+import org.apache.sysds.common.Types.FunctionBlock;
+import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.conf.ConfigurationManager;
 import org.apache.sysds.hops.recompile.Recompiler;
 import org.apache.sysds.hops.recompile.Recompiler.ResetType;
@@ -32,10 +36,11 @@ import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.runtime.DMLScriptException;
 import org.apache.sysds.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysds.runtime.instructions.cp.Data;
+import org.apache.sysds.runtime.util.ProgramConverter;
 import org.apache.sysds.utils.Statistics;
 
 
-public class FunctionProgramBlock extends ProgramBlock 
+public class FunctionProgramBlock extends ProgramBlock implements FunctionBlock
 {
 	public String _functionName;
 	public String _namespace;
@@ -46,7 +51,7 @@ public class FunctionProgramBlock extends ProgramBlock
 	private boolean _recompileOnce = false;
 	private boolean _nondeterministic = false;
 	
-	public FunctionProgramBlock( Program prog, ArrayList<DataIdentifier> inputParams, ArrayList<DataIdentifier> outputParams) {
+	public FunctionProgramBlock( Program prog, List<DataIdentifier> inputParams, List<DataIdentifier> outputParams) {
 		super(prog);
 		_childBlocks = new ArrayList<>();
 		_inputParams = new ArrayList<>();
@@ -79,7 +84,7 @@ public class FunctionProgramBlock extends ProgramBlock
 		_childBlocks.add(childBlock);
 	}
 	
-	public void setChildBlocks( ArrayList<ProgramBlock> pbs) {
+	public void setChildBlocks(ArrayList<ProgramBlock> pbs) {
 		_childBlocks = pbs;
 	}
 	
@@ -109,9 +114,11 @@ public class FunctionProgramBlock extends ProgramBlock
 				//     function will be recompiled for every execution.
 				// (2) without reset, there would be no benefit in recompiling the entire function
 				LocalVariableMap tmp = (LocalVariableMap) ec.getVariables().clone();
-				ResetType reset = ConfigurationManager.isCodegenEnabled() ? ResetType.RESET_KNOWN_DIMS : ResetType.RESET;
-				Recompiler.recompileProgramBlockHierarchy(_childBlocks, tmp, _tid, reset);
-				
+				boolean codegen = ConfigurationManager.isCodegenEnabled();
+				boolean singlenode = DMLScript.getGlobalExecMode() == ExecMode.SINGLE_NODE;
+				ResetType reset = (codegen || singlenode) ? ResetType.RESET_KNOWN_DIMS : ResetType.RESET;
+				Recompiler.recompileProgramBlockHierarchy(_childBlocks, tmp, _tid, false, reset);
+
 				if( DMLScript.STATISTICS ){
 					long t1 = System.nanoTime();
 					Statistics.incrementFunRecompileTime(t1-t0);
@@ -149,7 +156,7 @@ public class FunctionProgramBlock extends ProgramBlock
 				LOG.error("Function output "+ varName +" is missing.");
 			else if( dat.getDataType() != diOut.getDataType() )
 				LOG.warn("Function output "+ varName +" has wrong data type: "+dat.getDataType()+".");
-			else if( dat.getValueType() != diOut.getValueType() )
+			else if( diOut.getValueType() != ValueType.UNKNOWN && dat.getValueType() != diOut.getValueType() )
 				LOG.warn("Function output "+ varName +" has wrong value type: "+dat.getValueType()+".");
 		}
 	}
@@ -168,6 +175,12 @@ public class FunctionProgramBlock extends ProgramBlock
 	
 	public boolean isNondeterministic() {
 		return _nondeterministic;
+	}
+	
+	@Override
+	public FunctionBlock cloneFunctionBlock() {
+		return ProgramConverter
+			.createDeepCopyFunctionProgramBlock(this, new HashSet<>(), new HashSet<>());
 	}
 	
 	@Override

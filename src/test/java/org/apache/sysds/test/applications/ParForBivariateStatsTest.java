@@ -23,7 +23,7 @@ import java.util.HashMap;
 
 import org.junit.Test;
 import org.apache.sysds.hops.Hop;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.controlprogram.ParForProgramBlock.PExecMode;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
@@ -139,9 +139,9 @@ public class ParForBivariateStatsTest extends AutomatedTestBase
 		//compare matrices 
 		for( String out : new String[]{"bivar.stats", "category.counts", "category.means",  "category.variances" } )
 		{
-			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("bivarstats/"+out);
+			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("bivarstats/"+out);
 			
-			HashMap<CellIndex, Double> rfile  = readRMatrixFromFS(out);
+			HashMap<CellIndex, Double> rfile  = readRMatrixFromExpectedDir(out);
 			TestUtils.compareMatrices(dmlfile, rfile, eps, "Stat-DML", "Stat-R");
 		}
 	}

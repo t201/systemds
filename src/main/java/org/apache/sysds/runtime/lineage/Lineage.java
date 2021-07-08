@@ -19,23 +19,30 @@
 
 package org.apache.sysds.runtime.lineage;
 
+import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.runtime.controlprogram.ForProgramBlock;
+import org.apache.sysds.runtime.controlprogram.ProgramBlock;
+import org.apache.sysds.runtime.controlprogram.WhileProgramBlock;
 import org.apache.sysds.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysds.runtime.instructions.Instruction;
 import org.apache.sysds.runtime.instructions.cp.CPOperand;
 import org.apache.sysds.runtime.lineage.LineageCacheConfig.ReuseCacheType;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Stack;
 
 import static org.apache.sysds.utils.Explain.explain;
 
 public class Lineage {
+	//thread-/function-local lineage DAG
 	private final LineageMap _map;
-	private final Stack<LineageDedupBlock> _initDedupBlock = new Stack<>();
-	private final Stack<LineageDedupBlock> _activeDedupBlock = new Stack<>();
-	private final Map<ForProgramBlock, LineageDedupBlock> _dedupBlocks = new HashMap<>();
+	
+	//optional deduplication blocks (block := map of lineage patches per loop/function)
+	//(for invalid loops, there is a null entry to avoid redundant validity checks)
+	private final Map<ProgramBlock, LineageDedupBlock> _dedupBlocks = new HashMap<>();
+	private LineageDedupBlock _activeDedupBlock = null; //used during dedup runtime
+	private LineageDedupBlock _initDedupBlock = null;   //used during dedup init
 	
 	public Lineage() {
 		_map = new LineageMap();
@@ -46,30 +53,52 @@ public class Lineage {
 	}
 	
 	public void trace(Instruction inst, ExecutionContext ec) {
-		if (_activeDedupBlock.empty())
+		if (inst.getOpcode().equalsIgnoreCase("toString"))
+			//Silently skip toString. TODO: trace toString
+			return;
+
+		if (_activeDedupBlock == null || !_activeDedupBlock.isAllPathsTaken() || !LineageCacheConfig.ReuseCacheType.isNone())
 			_map.trace(inst, ec);
 	}
 	
-	public void tracePath(int block, Long path) {
-		LineageMap lm = _activeDedupBlock.peek().getMap(block, path);
-		if (lm != null)
-			_map.processDedupItem(lm, path);
+	public void traceCurrentDedupPath(ProgramBlock pb, ExecutionContext ec) {
+		if( _activeDedupBlock != null ) {
+			ArrayList<String> inputnames = pb.getStatementBlock().getInputstoSB();
+			LineageItem[] liinputs = LineageItemUtils.getLineageItemInputstoSB(inputnames, ec);
+			long lpath = _activeDedupBlock.getPath();
+			Map<String, Integer> dedupPatchHashList = LineageDedupUtils.setDedupMap(_activeDedupBlock, lpath);
+			LineageMap lm = _activeDedupBlock.getMap(lpath);
+			if (lm != null)
+				_map.processDedupItem(lm, lpath, liinputs, pb.getStatementBlock().getName(), dedupPatchHashList);
+		}
 	}
 	
 	public LineageItem getOrCreate(CPOperand variable) {
-		return _initDedupBlock.empty() ?
+		return _initDedupBlock == null ?
 			_map.getOrCreate(variable) :
-			_initDedupBlock.peek().getActiveMap().getOrCreate(variable);
+			_initDedupBlock.getActiveMap().getOrCreate(variable);
 	}
 	
 	public boolean contains(CPOperand variable) {
-		return _initDedupBlock.empty() ?
+		return _initDedupBlock == null ?
 			_map.containsKey(variable.getName()) :
-			_initDedupBlock.peek().getActiveMap().containsKey(variable.getName());
+			_initDedupBlock.getActiveMap().containsKey(variable.getName());
 	}
 	
 	public LineageItem get(String varName) {
 		return _map.get(varName);
+	}
+	
+	public void setDedupBlock(LineageDedupBlock ldb) {
+		_activeDedupBlock = ldb;
+	}
+	
+	public LineageMap getLineageMap() {
+		return _map;
+	}
+	
+	public Map<ProgramBlock, LineageDedupBlock> getDedupBlocks() {
+		return _dedupBlocks;
 	}
 	
 	public void set(String varName, LineageItem li) {
@@ -81,27 +110,48 @@ public class Lineage {
 	}
 	
 	public LineageItem get(CPOperand variable) {
-		return _initDedupBlock.empty() ?
+		return _initDedupBlock == null ?
 			_map.get(variable) :
-			_initDedupBlock.peek().getActiveMap().get(variable);
+			_initDedupBlock.getActiveMap().get(variable);
 	}
 	
-	public void pushInitDedupBlock(LineageDedupBlock ldb) {
-		_initDedupBlock.push(ldb);
+	public void resetDedupPath() {
+		if( _activeDedupBlock != null )
+			_activeDedupBlock.resetPath();
 	}
 	
-	public LineageDedupBlock popInitDedupBlock() {
-		return _initDedupBlock.pop();
+	public void setDedupPathBranch(int pos, boolean value) {
+		if( _activeDedupBlock != null && value )
+			_activeDedupBlock.setPathBranch(pos, value);
 	}
 	
-	public void computeDedupBlock(ForProgramBlock fpb, ExecutionContext ec) {
-		if (!_dedupBlocks.containsKey(fpb))
-			_dedupBlocks.put(fpb, LineageDedupUtils.computeDedupBlock(fpb, ec));
-		_activeDedupBlock.push(_dedupBlocks.get(fpb));
+	public void setInitDedupBlock(LineageDedupBlock ldb) {
+		_initDedupBlock = ldb;
+	}
+	
+	public void initializeDedupBlock(ProgramBlock pb, ExecutionContext ec) {
+		if( !(pb instanceof ForProgramBlock || pb instanceof WhileProgramBlock) )
+			throw new DMLRuntimeException("Invalid deduplication block: "+ pb.getClass().getSimpleName());
+		if (!_dedupBlocks.containsKey(pb)) {
+			// valid only if doesn't contain a nested loop
+			boolean valid = LineageDedupUtils.isValidDedupBlock(pb, false);
+			// count distinct paths and store in the dedupblock
+			_dedupBlocks.put(pb, valid? LineageDedupUtils.initializeDedupBlock(pb, ec) : null);
+		}
+		_activeDedupBlock = _dedupBlocks.get(pb); //null if invalid
+	}
+	
+	public void createDedupPatch(ProgramBlock pb, ExecutionContext ec) {
+		if (_activeDedupBlock != null)
+			LineageDedupUtils.setNewDedupPatch(_activeDedupBlock, pb, ec);
 	}
 	
 	public void clearDedupBlock() {
-		_activeDedupBlock.pop();
+		_activeDedupBlock = null;
+	}
+	
+	public void clearLineageMap() {
+		_map.resetLineageMaps();
 	}
 	
 	public Map<String,String> serialize() {
@@ -124,6 +174,7 @@ public class Lineage {
 		LineageItem.resetIDSequence();
 		LineageCache.resetCache();
 		LineageCacheStatistics.reset();
+		LineageEstimator.resetEstimatorCache();
 	}
 	
 	public static void setLinReusePartial() {
