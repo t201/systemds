@@ -68,13 +68,13 @@ public class ExistsVariableTest extends AutomatedTestBase
 		String HOME = SCRIPT_DIR + TEST_DIR;
 		String param = pos ? "1" : "0";
 		fullDMLScriptName = HOME + testName + ".dml";
-		programArgs = new String[]{"-stats", "-args", param, output("R") };
+		programArgs = new String[]{"-args", param, output("R") };
 		
 		//run script and compare output
 		runTest(true, false, null, -1); 
 		
 		//compare results
-		Double val = readDMLMatrixFromHDFS("R").get(new CellIndex(1,1));
+		Double val = readDMLMatrixFromOutputDir("R").get(new CellIndex(1,1));
 		val = (val!=null) ? val : 0;
 		Assert.assertTrue("Wrong result: "+param+" vs "+val,
 			val==Double.parseDouble(param));

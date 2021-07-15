@@ -23,21 +23,18 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 
-import org.junit.Test;
 import org.apache.sysds.runtime.controlprogram.caching.MatrixObject;
 import org.apache.sysds.runtime.instructions.cp.Data;
 import org.apache.sysds.runtime.instructions.cp.ScalarObject;
 import org.apache.sysds.runtime.lineage.Lineage;
-import org.apache.sysds.runtime.lineage.LineageItem;
-import org.apache.sysds.runtime.lineage.LineageItemUtils;
-import org.apache.sysds.runtime.lineage.LineageParser;
+import org.apache.sysds.runtime.lineage.LineageRecomputeUtils;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
-import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
 import org.apache.sysds.test.TestUtils;
+import org.junit.Test;
 
-public class LineageTraceExecTest extends AutomatedTestBase {
+public class LineageTraceExecTest extends LineageBase {
 	
 	protected static final String TEST_DIR = "functions/lineage/";
 	protected static final String TEST_NAME1 = "LineageTraceExec1"; //rand - matrix result
@@ -98,12 +95,11 @@ public class LineageTraceExecTest extends AutomatedTestBase {
 	}
 	
 	private void testLineageTraceExec(String testname) {
-		System.out.println("------------ BEGIN " + testname + "------------");
+		LOG.debug("------------ BEGIN " + testname + "------------");
 		
 		getAndLoadTestConfiguration(testname);
 		List<String> proArgs = new ArrayList<>();
 		
-		proArgs.add("-explain");
 		proArgs.add("-lineage");
 		proArgs.add("-args");
 		proArgs.add(input("X"));
@@ -124,16 +120,15 @@ public class LineageTraceExecTest extends AutomatedTestBase {
 		
 		//get lineage and generate program
 		String Rtrace = readDMLLineageFromHDFS("R");
-		LineageItem R = LineageParser.parseLineageTrace(Rtrace);
-		Data ret = LineageItemUtils.computeByLineage(R);
+		Data ret = LineageRecomputeUtils.parseNComputeLineageTrace(Rtrace, null);
 		
 		if( testname.equals(TEST_NAME2) || testname.equals(TEST_NAME5)) {
-			double val1 = readDMLScalarFromHDFS("R").get(new CellIndex(1,1));
+			double val1 = readDMLScalarFromOutputDir("R").get(new CellIndex(1,1));
 			double val2 = ((ScalarObject)ret).getDoubleValue();
 			TestUtils.compareScalars(val1, val2, 1e-6);
 		}
 		else {
-			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("R");
+			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("R");
 			MatrixBlock tmp = ((MatrixObject)ret).acquireReadAndRelease();
 			TestUtils.compareMatrices(dmlfile, tmp, 1e-6);
 		}

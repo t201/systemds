@@ -22,8 +22,8 @@ package org.apache.sysds.test.functions.builtin;
 import org.junit.Test;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.hops.OptimizerUtils;
-import org.apache.sysds.lops.LopProperties;
 import org.apache.sysds.runtime.matrix.data.MatrixValue;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
@@ -51,46 +51,46 @@ public class BuiltinMulticlassSVMTest extends AutomatedTestBase {
 
 	@Test
 	public void testMSVMDense() {
-		runMSVMTest(false, false, eps, 1.0, max_iter, LopProperties.ExecType.CP);
+		runMSVMTest(false, false, eps, 1.0, max_iter, ExecType.CP);
 	}
 
 	@Test
 	public void testMSVMSparse() {
-		runMSVMTest(true, false, eps, 1.0, max_iter, LopProperties.ExecType.CP);
+		runMSVMTest(true, false, eps, 1.0, max_iter, ExecType.CP);
 	}
 
 	@Test
 	public void testMSVMInterceptSpark() {
-		runMSVMTest(true, true, eps, 1.0, max_iter, LopProperties.ExecType.SPARK);
+		runMSVMTest(true, true, eps, 1.0, max_iter, ExecType.SPARK);
 	}
 
 	@Test
 	public void testMSVMSparseLambda2() {
-		runMSVMTest(true, true, eps, 2.0, max_iter, LopProperties.ExecType.CP);
+		runMSVMTest(true, true, eps, 2.0, max_iter, ExecType.CP);
 	}
 
 	@Test
 	public void testMSVMSparseLambda100CP() {
-		runMSVMTest(true, true, 1, 100, max_iter, LopProperties.ExecType.CP);
+		runMSVMTest(true, true, 1, 100, max_iter, ExecType.CP);
 	}
 
 	@Test
 	public void testMSVMSparseLambda100Spark() {
-		runMSVMTest(true, true, 1, 100, max_iter, LopProperties.ExecType.SPARK);
+		runMSVMTest(true, true, 1, 100, max_iter, ExecType.SPARK);
 	}
 
 	@Test
 	public void testMSVMIteration() {
-		runMSVMTest(true, true, 1, 2.0, 100, LopProperties.ExecType.CP);
+		runMSVMTest(true, true, 1, 2.0, 100, ExecType.CP);
 	}
 
 	@Test
 	public void testMSVMDenseIntercept() {
-		runMSVMTest(false, true, eps, 1.0, max_iter, LopProperties.ExecType.CP);
+		runMSVMTest(false, true, eps, 1.0, max_iter, ExecType.CP);
 	}
 
 	private void runMSVMTest(boolean sparse, boolean intercept, double eps, double lambda, int run,
-		LopProperties.ExecType instType) {
+		ExecType instType) {
 		Types.ExecMode platformOld = setExecMode(instType);
 
 		boolean oldFlag = OptimizerUtils.ALLOW_ALGEBRAIC_SIMPLIFICATION;
@@ -113,8 +113,8 @@ public class BuiltinMulticlassSVMTest extends AutomatedTestBase {
 				Integer.toString(run),
 				expectedDir());
 
-			double[][] X = getRandomMatrix(rows, colsX, 0, 1, sparsity, -1);
-			double[][] Y = getRandomMatrix(rows, 1, 0, 10, 1, -1);
+			double[][] X = getRandomMatrix(rows, colsX, 0, 1, sparsity, 2);
+			double[][] Y = getRandomMatrix(rows, 1, 0, 10, 1, 3);
 			Y = TestUtils.round(Y);
 
 			writeInputMatrixWithMTD("X", X, true);
@@ -123,8 +123,8 @@ public class BuiltinMulticlassSVMTest extends AutomatedTestBase {
 			runTest(true, false, null, -1);
 			runRScript(true);
 
-			HashMap<MatrixValue.CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("model");
-			HashMap<MatrixValue.CellIndex, Double> rfile = readRMatrixFromFS("model");
+			HashMap<MatrixValue.CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("model");
+			HashMap<MatrixValue.CellIndex, Double> rfile = readRMatrixFromExpectedDir("model");
 			TestUtils.compareMatrices(dmlfile, rfile, eps, "Stat-DML", "Stat-R");
 		}
 		finally {

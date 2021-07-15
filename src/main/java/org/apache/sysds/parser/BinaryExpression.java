@@ -23,7 +23,7 @@ import java.util.HashMap;
 
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.ValueType;
-import org.apache.sysds.runtime.privacy.PrivacyPropagator;
+import org.apache.sysds.runtime.privacy.propagation.PrivacyPropagator;
 
 
 public class BinaryExpression extends Expression 
@@ -146,7 +146,7 @@ public class BinaryExpression extends Expression
 		}
 
 		// Set privacy of output
-		output.setPrivacy(PrivacyPropagator.MergeBinary(
+		output.setPrivacy(PrivacyPropagator.mergeBinary(
 			getLeft().getOutput().getPrivacy(), getRight().getOutput().getPrivacy()));
 
 		this.setOutput(output);

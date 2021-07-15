@@ -28,7 +28,7 @@ import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
 import org.apache.sysds.hops.LeftIndexingOp;
 import org.apache.sysds.hops.LeftIndexingOp.LeftIndexingMethod;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.runtime.meta.MatrixCharacteristics;
 import org.apache.sysds.test.AutomatedTestBase;
@@ -193,8 +193,8 @@ public class LeftIndexingSparseSparseTest extends AutomatedTestBase
 			LeftIndexingOp.FORCED_LEFT_INDEXING = null;
 		}
 		
-		HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("R");
-		HashMap<CellIndex, Double> rfile = readRMatrixFromFS("R");
+		HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("R");
+		HashMap<CellIndex, Double> rfile = readRMatrixFromExpectedDir("R");
 		TestUtils.compareMatrices(dmlfile, rfile, 0, "DML", "R");
 		checkDMLMetaDataFile("R", new MatrixCharacteristics(rows1,cols1,1,1));
 	}

@@ -28,7 +28,7 @@ import org.junit.Test;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
 import org.apache.sysds.common.Types.FileFormat;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.runtime.meta.MatrixCharacteristics;
@@ -470,8 +470,8 @@ public class FullGroupedAggregateTest extends AutomatedTestBase
 			runRScript(true); 
 		
 			//compare matrices 
-			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS(weights?"D":"C");
-			HashMap<CellIndex, Double> rfile  = readRMatrixFromFS(weights?"D":"C");
+			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir(weights?"D":"C");
+			HashMap<CellIndex, Double> rfile  = readRMatrixFromExpectedDir(weights?"D":"C");
 			TestUtils.compareMatrices(dmlfile, rfile, eps, "Stat-DML", "Stat-R");
 		}
 		catch(IOException ex)

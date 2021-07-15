@@ -20,14 +20,18 @@
 package org.apache.sysds.runtime.instructions.cp;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.stream.Collectors;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.sysds.api.DMLScript;
+import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.lops.Lop;
 import org.apache.sysds.parser.DMLProgram;
 import org.apache.sysds.parser.DataIdentifier;
-import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.runtime.DMLScriptException;
 import org.apache.sysds.runtime.controlprogram.FunctionProgramBlock;
@@ -47,22 +51,34 @@ import org.apache.sysds.runtime.lineage.LineageItemUtils;
 import org.apache.sysds.utils.Statistics;
 
 public class FunctionCallCPInstruction extends CPInstruction {
+	private static final Log LOG = LogFactory.getLog(FunctionCallCPInstruction.class.getName());
 	private final String _functionName;
 	private final String _namespace;
+	private final boolean _opt;
 	private final CPOperand[] _boundInputs;
+	private final LineageItem[] _lineageInputs;
 	private final List<String> _boundInputNames;
 	private final List<String> _funArgNames;
 	private final List<String> _boundOutputNames;
 
-	public FunctionCallCPInstruction(String namespace, String functName, CPOperand[] boundInputs,
-			List<String> boundInputNames, List<String> funArgNames, List<String> boundOutputNames, String istr) {
-		super(CPType.External, null, functName, istr);
+	public FunctionCallCPInstruction(String namespace, String functName, boolean opt,
+		CPOperand[] boundInputs, LineageItem[] lineageInputs, List<String> funArgNames, 
+		List<String> boundOutputNames, String istr) {
+		super(CPType.FCall, null, functName, istr);
 		_functionName = functName;
 		_namespace = namespace;
+		_opt = opt;
 		_boundInputs = boundInputs;
-		_boundInputNames = boundInputNames;
+		_lineageInputs = lineageInputs;
+		_boundInputNames = Arrays.stream(boundInputs).map(i -> i.getName())
+			.collect(Collectors.toCollection(ArrayList::new));
 		_funArgNames = funArgNames;
 		_boundOutputNames = boundOutputNames;
+	}
+
+	public FunctionCallCPInstruction(String namespace, String functName, boolean opt,
+		CPOperand[] boundInputs, List<String> funArgNames, List<String> boundOutputNames, String istr) {
+		this(namespace, functName, opt, boundInputs, null, funArgNames, boundOutputNames, istr);
 	}
 
 	public String getFunctionName() {
@@ -74,26 +90,25 @@ public class FunctionCallCPInstruction extends CPInstruction {
 	}
 	
 	public static FunctionCallCPInstruction parseInstruction(String str) {
-		//schema: extfunct, fname, num inputs, num outputs, inputs (name-value pairs), outputs
-		String[] parts = InstructionUtils.getInstructionPartsWithValueType ( str );
+		//schema: fcall, fnamespace, fname, opt, num inputs, num outputs, inputs (name-value pairs), outputs
+		String[] parts = InstructionUtils.getInstructionPartsWithValueType (str);
 		String namespace = parts[1];
 		String functionName = parts[2];
-		int numInputs = Integer.valueOf(parts[3]);
-		int numOutputs = Integer.valueOf(parts[4]);
+		boolean opt = Boolean.parseBoolean(parts[3]);
+		int numInputs = Integer.valueOf(parts[4]);
+		int numOutputs = Integer.valueOf(parts[5]);
 		CPOperand[] boundInputs = new CPOperand[numInputs];
-		List<String> boundInputNames = new ArrayList<>();
 		List<String> funArgNames = new ArrayList<>();
 		List<String> boundOutputNames = new ArrayList<>();
 		for (int i = 0; i < numInputs; i++) {
-			String[] nameValue = IOUtilFunctions.splitByFirst(parts[5 + i], "=");
+			String[] nameValue = IOUtilFunctions.splitByFirst(parts[6 + i], "=");
 			boundInputs[i] = new CPOperand(nameValue[1]);
 			funArgNames.add(nameValue[0]);
-			boundInputNames.add(boundInputs[i].getName());
 		}
 		for (int i = 0; i < numOutputs; i++)
-			boundOutputNames.add(parts[5 + numInputs + i]);
+			boundOutputNames.add(parts[6 + numInputs + i]);
 		return new FunctionCallCPInstruction ( namespace, functionName,
-			boundInputs, boundInputNames, funArgNames, boundOutputNames, str );
+			opt, boundInputs, funArgNames, boundOutputNames, str );
 	}
 	
 	@Override
@@ -108,17 +123,20 @@ public class FunctionCallCPInstruction extends CPInstruction {
 			LOG.trace("Executing instruction : " + toString());
 		}
 		// get the function program block (stored in the Program object)
-		FunctionProgramBlock fpb = ec.getProgram().getFunctionProgramBlock(_namespace, _functionName);
+		FunctionProgramBlock fpb = ec.getProgram().getFunctionProgramBlock(_namespace, _functionName, _opt);
 		
 		// sanity check number of function parameters
 		if( _boundInputs.length < fpb.getInputParams().size() ) {
-			throw new DMLRuntimeException("Number of bound input parameters does not match the function signature "
+			throw new DMLRuntimeException("fcall "+_functionName+": "
+				+ "Number of bound input parameters does not match the function signature "
 				+ "("+_boundInputs.length+", but "+fpb.getInputParams().size()+" expected)");
 		}
 		
 		// check if function outputs can be reused from cache
-		LineageItem[] liInputs = DMLScript.LINEAGE && LineageCacheConfig.isMultiLevelReuse() ?
-			LineageItemUtils.getLineage(ec, _boundInputs) : null;
+		LineageItem[] liInputs = _lineageInputs;
+		if (_lineageInputs == null)
+			liInputs = (LineageCacheConfig.isMultiLevelReuse() || DMLScript.LINEAGE_ESTIMATE) 
+				? LineageItemUtils.getLineage(ec, _boundInputs) : null;
 		if (!fpb.isNondeterministic() && reuseFunctionOutputs(liInputs, fpb, ec))
 			return; //only if all the outputs are found in cache
 		
@@ -137,7 +155,7 @@ public class FunctionCallCPInstruction extends CPInstruction {
 			String argName = _funArgNames.get(i);
 			DataIdentifier currFormalParam = fpb.getInputParam(argName);
 			if( currFormalParam == null ) {
-				throw new DMLRuntimeException("Non-existing named "
+				throw new DMLRuntimeException("fcall "+_functionName+": Non-existing named "
 					+ "function argument: '"+argName+"' (line "+getLineNum()+").");
 			}
 			
@@ -156,7 +174,7 @@ public class FunctionCallCPInstruction extends CPInstruction {
 			
 			//map lineage to function arguments
 			if( lineage != null ) {
-				LineageItem litem = ec.getLineageItem(input);
+				LineageItem litem = _lineageInputs == null ? ec.getLineageItem(input) : _lineageInputs[i];
 				lineage.set(currFormalParam.getName(), (litem!=null) ? 
 					litem : ec.getLineage().getOrCreate(input));
 			}
@@ -176,7 +194,7 @@ public class FunctionCallCPInstruction extends CPInstruction {
 		fn_ec.setVariables(functionVariables);
 		fn_ec.setLineage(lineage);
 		// execute the function block
-		long t0 = !ReuseCacheType.isNone() ? System.nanoTime() : 0;
+		long t0 = !ReuseCacheType.isNone()||DMLScript.LINEAGE_ESTIMATE ? System.nanoTime() : 0;
 		try {
 			fpb._functionName = this._functionName;
 			fpb._namespace = this._namespace;
@@ -189,7 +207,7 @@ public class FunctionCallCPInstruction extends CPInstruction {
 			String fname = DMLProgram.constructFunctionKey(_namespace, _functionName);
 			throw new DMLRuntimeException("error executing function " + fname, e);
 		}
-		long t1 = !ReuseCacheType.isNone() ? System.nanoTime() : 0;
+		long t1 = !ReuseCacheType.isNone()||DMLScript.LINEAGE_ESTIMATE ? System.nanoTime() : 0;
 		
 		// cleanup all returned variables w/o binding 
 		HashSet<String> expectRetVars = new HashSet<>();
@@ -215,7 +233,8 @@ public class FunctionCallCPInstruction extends CPInstruction {
 			String retVarName = fpb.getOutputParams().get(i).getName();
 			Data boundValue = retVars.get(retVarName);
 			if (boundValue == null)
-				throw new DMLRuntimeException(boundVarName + " was not assigned a return value");
+				throw new DMLRuntimeException("fcall "+_functionName+": "
+					+boundVarName + " was not assigned a return value");
 
 			//cleanup existing data bound to output variable name
 			Data exdata = ec.removeVariable(boundVarName);
@@ -231,7 +250,8 @@ public class FunctionCallCPInstruction extends CPInstruction {
 		}
 
 		//update lineage cache with the functions outputs
-		if (DMLScript.LINEAGE && LineageCacheConfig.isMultiLevelReuse() && !fpb.isNondeterministic()) {
+		if ((DMLScript.LINEAGE && LineageCacheConfig.isMultiLevelReuse() && !fpb.isNondeterministic())
+			|| (LineageCacheConfig.isEstimator() && !fpb.isNondeterministic())) {
 			LineageCache.putValue(fpb.getOutputParams(), liInputs, 
 					getCacheFunctionName(_functionName, fpb), fn_ec, t1-t0);
 			//FIXME: send _boundOutputNames instead of fpb.getOutputParams as 
@@ -269,6 +289,10 @@ public class FunctionCallCPInstruction extends CPInstruction {
 		}
 
 		return sb.substring( 0, sb.length()-Lop.OPERAND_DELIMITOR.length() );
+	}
+
+	public CPOperand[] getInputs(){
+		return _boundInputs;
 	}
 	
 	private boolean reuseFunctionOutputs(LineageItem[] liInputs, FunctionProgramBlock fpb, ExecutionContext ec) {

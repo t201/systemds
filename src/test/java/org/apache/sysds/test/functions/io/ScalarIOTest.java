@@ -19,12 +19,14 @@
 
 package org.apache.sysds.test.functions.io;
 
-import org.junit.Assert;
-import org.junit.Test;
+import java.io.ByteArrayOutputStream;
+
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
 import org.apache.sysds.test.TestUtils;
+import org.junit.Assert;
+import org.junit.Test;
 
 public class ScalarIOTest extends AutomatedTestBase 
 {
@@ -116,8 +118,9 @@ public class ScalarIOTest extends AutomatedTestBase
 
 		int int_scalar = 464;
 		
+		setOutputBuffering(true);
 		fullDMLScriptName = HOME + "ScalarWrite.dml";
-		programArgs = new String[]{	"-args", String.valueOf(int_scalar), output("a.scalar") };
+		programArgs = new String[]{"-args", String.valueOf(int_scalar), output("a.scalar")};
 		runTest(true, false, null, -1);
 		
 		//int int_out_scalar = TestUtils.readDMLScalarFromHDFS(output(OUT_FILE)).get(new CellIndex(1,1)).intValue();
@@ -127,8 +130,8 @@ public class ScalarIOTest extends AutomatedTestBase
 		fullDMLScriptName = HOME + "ScalarRead.dml";
 		programArgs = new String[] { "-args", output("a.scalar"), "int" };
 		
-		setExpectedStdOut(String.valueOf(int_scalar));
-		runTest(true, false, null, -1);
+		ByteArrayOutputStream stdout =  runTest(true, false, null, -1);
+		bufferContainsString(stdout, String.valueOf(int_scalar));
 	}
 
 	@Test
@@ -147,8 +150,8 @@ public class ScalarIOTest extends AutomatedTestBase
 		fullDMLScriptName = HOME + "ScalarRead.dml";
 		programArgs = new String[] { "-args", output("a.scalar"), "double" };
 		
-		setExpectedStdOut(String.valueOf(double_scalar));
-		runTest(true, false, null, -1);
+		ByteArrayOutputStream stdout = runTest(true, false, null, -1);
+		bufferContainsString(stdout, String.valueOf(double_scalar));
 	}
 
 	@Test
@@ -165,8 +168,9 @@ public class ScalarIOTest extends AutomatedTestBase
 		fullDMLScriptName = HOME + "ScalarRead.dml";
 		programArgs = new String[] { "-args", output("a.scalar"), "boolean" };
 		
-		setExpectedStdOut(String.valueOf(boolean_scalar).toUpperCase());
-		runTest(true, false, null, -1);
+		// setExpectedStdOut(String.valueOf(boolean_scalar).toUpperCase());
+		ByteArrayOutputStream stdout = runTest(true, false, null, -1);
+		bufferContainsString(stdout, String.valueOf(boolean_scalar).toUpperCase());
 	}
 
 	@Test
@@ -182,8 +186,9 @@ public class ScalarIOTest extends AutomatedTestBase
 		fullDMLScriptName = HOME + "ScalarRead.dml";
 		programArgs = new String[] { "-args", output("a.scalar"), "string" };
 		
-		setExpectedStdOut(String.valueOf(string_scalar));
-		runTest(true, false, null, -1);
+		ByteArrayOutputStream stdout = runTest(true, false, null, -1);
+		bufferContainsString(stdout, string_scalar);
+
 	}
 	
 }

@@ -19,18 +19,16 @@
 
 package org.apache.sysds.test.functions.builtin;
 
+import java.util.HashMap;
+
 import org.apache.sysds.common.Types;
-import org.apache.sysds.lops.LopProperties;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
+import org.apache.sysds.runtime.DMLScriptException;
 import org.apache.sysds.runtime.matrix.data.MatrixValue;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
 import org.apache.sysds.test.TestUtils;
 import org.junit.Test;
-
-import java.util.HashMap;
-
-import static org.junit.Assert.fail;
 
 public class BuiltinToOneHotTest extends AutomatedTestBase {
 	private final static String TEST_NAME = "toOneHot";
@@ -49,7 +47,7 @@ public class BuiltinToOneHotTest extends AutomatedTestBase {
 
 	@Test
 	public void runSimpleTest() {
-		runToOneHotTest(false, false, LopProperties.ExecType.CP, false);
+		runToOneHotTest(false, false, ExecType.CP, false);
 	}
 
 	@Test
@@ -79,20 +77,12 @@ public class BuiltinToOneHotTest extends AutomatedTestBase {
 			programArgs = new String[]{"-args", input("A"),
 				String.format("%d", numClassesPassed), output("B") };
 
-			runTest(true, false, null, -1);
+			runTest(true, shouldFail, shouldFail ? DMLScriptException.class : null, -1);
 
 			if(!shouldFail) {
 				HashMap<MatrixValue.CellIndex, Double> expected = computeExpectedResult(A);
-				HashMap<MatrixValue.CellIndex, Double> result = readDMLMatrixFromHDFS("B");
+				HashMap<MatrixValue.CellIndex, Double> result = readDMLMatrixFromOutputDir("B");
 				TestUtils.compareMatrices(result, expected, eps, "Stat-DML", "Stat-Java");
-			}
-			else {
-				try {
-					readDMLMatrixFromHDFS("B");
-					fail("File should not have been written");
-				} catch(AssertionError e) {
-					// exception expected
-				}
 			}
 		}
 		finally {

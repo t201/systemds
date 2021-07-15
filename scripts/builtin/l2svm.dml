@@ -26,20 +26,19 @@
 # ---------------------------------------------------------------------------------------------
 # NAME            TYPE    DEFAULT     MEANING
 # ---------------------------------------------------------------------------------------------
-# X               Double  ---         matrix X of feature vectors
-# Y               Double  ---         matrix Y of class labels have to be a single column
+# X               Matrix  ---         matrix X of feature vectors
+# Y               Matrix  ---         matrix Y of class labels have to be a single column
 # intercept       Boolean False       No Intercept ( If set to TRUE then a constant bias column is added to X)
-# epsilon         Double  0.001       Procedure terminates early if the reduction in objective function 
-#                      value is less than epsilon (tolerance) times the initial objective function value.
+# epsilon         Double  0.001       Procedure terminates early if the reduction in objective function value is less than epsilon (tolerance) times the initial objective function value.
 # lambda          Double  1.0         Regularization parameter (lambda) for L2 regularization
-# maxiterations   Int     100         Maximum number of conjugate gradient iterations
-# verbose         Boolean False       Set to true if one wants print statements updating on loss.
-# column_id       Int     -1          The column Id used if one wants to add a ID to the print statement, 
-#                                     Specificly usefull when L2SVM is used in MSVM.
+# maxIterations   Int     100         Maximum number of conjugate gradient iterations
+# maxii           Int     20          -
+# verbose         Boolean FALSE       Set to true if one wants print statements updating on loss.
+# columnId        Int     -1          The column Id used if one wants to add a ID to the print statement, Specificly usefull when L2SVM is used in MSVM.
 # ---------------------------------------------------------------------------------------------
  
 
-#Output(s)
+# RETURN VALUES
 # ---------------------------------------------------------------------------------------------
 # NAME            TYPE    DEFAULT     MEANING
 # ---------------------------------------------------------------------------------------------
@@ -48,7 +47,7 @@
 
 m_l2svm = function(Matrix[Double] X, Matrix[Double] Y, Boolean intercept = FALSE,
     Double epsilon = 0.001, Double lambda = 1, Integer maxIterations = 100, 
-    Boolean verbose = FALSE, Integer columnId = -1)
+    Integer maxii = 20, Boolean verbose = FALSE, Integer columnId = -1)
   return(Matrix[Double] model)
 {
   #check input parameter assertions
@@ -72,7 +71,7 @@ m_l2svm = function(Matrix[Double] X, Matrix[Double] Y, Boolean intercept = FALSE
 
   # TODO make this a stop condition for l2svm instead of just printing.
   if(num_min + num_max != nrow(Y))
-    print("L2SVM: WARNING invalid number of labels in Y")
+    print("L2SVM: WARNING invalid number of labels in Y: "+num_min+" "+num_max)
 
   # Scale inputs to -1 for negative, and 1 for positive classification
   if(check_min != -1 | check_max != +1)
@@ -110,7 +109,8 @@ m_l2svm = function(Matrix[Double] X, Matrix[Double] Y, Boolean intercept = FALSE
     wd = lambda * sum(w * s)
     dd = lambda * sum(s * s)
     continue1 = TRUE
-    while(continue1){
+    iiter = 0
+    while(continue1 & iiter < maxii){
       tmp_Xw = Xw + step_sz*Xd
       out = 1 - Y * (tmp_Xw)
       sv = (out > 0)
@@ -119,6 +119,7 @@ m_l2svm = function(Matrix[Double] X, Matrix[Double] Y, Boolean intercept = FALSE
       h = dd + sum(Xd * sv * Xd)
       step_sz = step_sz - g/h
       continue1 = (g*g/h >= epsilon)
+      iiter = iiter + 1
     }
 
     #update weights
@@ -133,7 +134,7 @@ m_l2svm = function(Matrix[Double] X, Matrix[Double] Y, Boolean intercept = FALSE
 
     if(verbose) {
       colstr = ifelse(columnId!=-1, ", Col:"+columnId + " ,", " ,")
-      print("Iter:" + toString(iter) + colstr + " Obj:" + obj)
+      print("Iter: " + toString(iter) + " InnerIter: " + toString(iiter) +" --- "+ colstr + " Obj:" + obj)
     }
 
     tmp = sum(s * g_old)

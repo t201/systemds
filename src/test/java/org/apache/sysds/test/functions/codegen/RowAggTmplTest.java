@@ -22,19 +22,23 @@ package org.apache.sysds.test.functions.codegen;
 import java.io.File;
 import java.util.HashMap;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.sysds.common.Types.ExecMode;
 import org.apache.sysds.hops.OptimizerUtils;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.lops.RightIndex;
-import org.apache.sysds.lops.LopProperties.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
 import org.apache.sysds.test.TestUtils;
+import org.junit.Assert;
+import org.junit.Test;
 
 public class RowAggTmplTest extends AutomatedTestBase
 {
+	private static final Log LOG = LogFactory.getLog(RowAggTmplTest.class.getName());
+
 	private static final String TEST_NAME = "rowAggPattern";
 	private static final String TEST_NAME1 = TEST_NAME+"1"; //t(X)%*%(X%*%(lamda*v))
 	private static final String TEST_NAME2 = TEST_NAME+"2"; //t(X)%*%(lamda*(X%*%v))
@@ -88,7 +92,7 @@ public class RowAggTmplTest extends AutomatedTestBase
 	private final static String TEST_CONF = "SystemDS-config-codegen.xml";
 	private final static File   TEST_CONF_FILE = new File(SCRIPT_DIR + TEST_DIR, TEST_CONF);
 
-	private static final double eps = Math.pow(10, -10);
+	private static double eps = Math.pow(10, -10);
 	
 	@Override
 	public void setUp() {
@@ -799,7 +803,7 @@ public class RowAggTmplTest extends AutomatedTestBase
 			
 			String HOME = SCRIPT_DIR + TEST_DIR;
 			fullDMLScriptName = HOME + testname + ".dml";
-			programArgs = new String[]{"-explain", "-stats", "-args", output("S") };
+			programArgs = new String[]{"-stats", "-args", output("S") };
 			
 			fullRScriptName = HOME + testname + ".R";
 			rCmd = getRCmd(inputDir(), expectedDir());
@@ -809,18 +813,21 @@ public class RowAggTmplTest extends AutomatedTestBase
 			runTest(true, false, null, -1);
 			runRScript(true);
 			
+			if(testname.equals(TEST_NAME38) && TEST_GPU)
+				eps = Math.pow(10, -7);
 			//compare matrices
-			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("S");
-			HashMap<CellIndex, Double> rfile  = readRMatrixFromFS("S");
+			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("S");
+			HashMap<CellIndex, Double> rfile  = readRMatrixFromExpectedDir("S");
 			TestUtils.compareMatrices(dmlfile, rfile, eps, "Stat-DML", "Stat-R");
 			Assert.assertTrue(heavyHittersContainsSubString("spoofRA") 
-				|| heavyHittersContainsSubString("sp_spoofRA"));
+				|| heavyHittersContainsSubString("sp_spoofRA") 
+				|| heavyHittersContainsSubString("gpu_spoofCUDARA"));
 			
 			//ensure full aggregates for certain patterns
 			if( testname.equals(TEST_NAME15) )
-				Assert.assertTrue(!heavyHittersContainsSubString("uark+"));
+				Assert.assertFalse(heavyHittersContainsSubString("uark+"));
 			if( testname.equals(TEST_NAME17) )
-				Assert.assertTrue(!heavyHittersContainsSubString(RightIndex.OPCODE));
+				Assert.assertFalse(heavyHittersContainsSubString(RightIndex.OPCODE));
 			if( testname.equals(TEST_NAME28) || testname.equals(TEST_NAME45) )
 				Assert.assertTrue(!heavyHittersContainsSubString("spoofRA", 2)
 					&& !heavyHittersContainsSubString("sp_spoofRA", 2));
@@ -828,14 +835,14 @@ public class RowAggTmplTest extends AutomatedTestBase
 				Assert.assertTrue(!heavyHittersContainsSubString("spoofRA", 2)
 					&& !heavyHittersContainsSubString(RightIndex.OPCODE));
 			if( testname.equals(TEST_NAME31) )
-				Assert.assertTrue(!heavyHittersContainsSubString("spoofRA", 2));
+				Assert.assertFalse(heavyHittersContainsSubString("spoofRA", 2));
 			if( testname.equals(TEST_NAME35) )
 				Assert.assertTrue(!heavyHittersContainsSubString("spoofRA", 2)
 					&& !heavyHittersContainsSubString("cbind"));
 			if( testname.equals(TEST_NAME36) )
-				Assert.assertTrue(!heavyHittersContainsSubString("xor"));
+				Assert.assertFalse(heavyHittersContainsSubString("xor"));
 			if( testname.equals(TEST_NAME41) )
-				Assert.assertTrue(!heavyHittersContainsSubString("seq"));
+				Assert.assertFalse(heavyHittersContainsSubString("seq"));
 			if( testname.equals(TEST_NAME42) )
 				Assert.assertTrue(!heavyHittersContainsSubString("min","nmin") 
 					&& !heavyHittersContainsSubString("spoof", 2));
@@ -861,7 +868,7 @@ public class RowAggTmplTest extends AutomatedTestBase
 	@Override
 	protected File getConfigTemplateFile() {
 		// Instrumentation in this test's output log to show custom configuration file used for template.
-		System.out.println("This test case overrides default configuration with " + TEST_CONF_FILE.getPath());
+		LOG.info("This test case overrides default configuration with " + TEST_CONF_FILE.getPath());
 		return TEST_CONF_FILE;
 	}
 }

@@ -29,20 +29,24 @@ import org.apache.sysds.runtime.data.BasicTensorBlock;
 import org.apache.sysds.runtime.data.TensorBlock;
 import org.apache.sysds.runtime.functionobjects.Builtin;
 import org.apache.sysds.runtime.instructions.InstructionUtils;
+import org.apache.sysds.runtime.lineage.LineageDedupUtils;
 import org.apache.sysds.runtime.lineage.LineageItem;
-import org.apache.sysds.runtime.lineage.LineageItemUtils;
+import org.apache.sysds.runtime.matrix.data.LibMatrixCountDistinct;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
 import org.apache.sysds.runtime.matrix.data.MatrixIndexes;
 import org.apache.sysds.runtime.matrix.operators.AggregateUnaryOperator;
+import org.apache.sysds.runtime.matrix.operators.CountDistinctOperator;
 import org.apache.sysds.runtime.matrix.operators.Operator;
 import org.apache.sysds.runtime.matrix.operators.SimpleOperator;
 import org.apache.sysds.runtime.meta.DataCharacteristics;
 import org.apache.sysds.utils.Explain;
 
-public class AggregateUnaryCPInstruction extends UnaryCPInstruction
-{
+public class AggregateUnaryCPInstruction extends UnaryCPInstruction {
+	// private static final Log LOG = LogFactory.getLog(AggregateUnaryCPInstruction.class.getName());
+
 	public enum AUType {
-		NROW, NCOL, LENGTH, EXISTS, LINEAGE,
+		NROW, NCOL, LENGTH, EXISTS, LINEAGE, 
+		COUNT_DISTINCT, COUNT_DISTINCT_APPROX,
 		DEFAULT;
 		public boolean isMeta() {
 			return this != DEFAULT;
@@ -72,6 +76,20 @@ public class AggregateUnaryCPInstruction extends UnaryCPInstruction
 			|| opcode.equalsIgnoreCase("lineage")){
 			return new AggregateUnaryCPInstruction(new SimpleOperator(Builtin.getBuiltinFnObject(opcode)),
 				in1, out, AUType.valueOf(opcode.toUpperCase()), opcode, str);
+		} 
+		else if(opcode.equalsIgnoreCase("uacd")){
+			return new AggregateUnaryCPInstruction(new SimpleOperator(null),
+			in1, out, AUType.COUNT_DISTINCT, opcode, str);
+		}
+		else if(opcode.equalsIgnoreCase("uacdap")){
+			return new AggregateUnaryCPInstruction(new SimpleOperator(null),
+			in1, out, AUType.COUNT_DISTINCT_APPROX, opcode, str);
+		}
+		else if(opcode.equalsIgnoreCase("uarimax") || opcode.equalsIgnoreCase("uarimin")){
+			// parse with number of outputs
+			AggregateUnaryOperator aggun = InstructionUtils
+				.parseAggregateUnaryRowIndexOperator(opcode, Integer.parseInt(parts[4]), Integer.parseInt(parts[3]));
+			return new AggregateUnaryCPInstruction(aggun, in1, out, AUType.DEFAULT, opcode, str);
 		}
 		else { //DEFAULT BEHAVIOR
 			AggregateUnaryOperator aggun = InstructionUtils
@@ -147,9 +165,21 @@ public class AggregateUnaryCPInstruction extends UnaryCPInstruction
 					throw new DMLRuntimeException("Lineage trace "
 						+ "for variable "+input1.getName()+" unavailable.");
 				
-				LineageItem li = !DMLScript.LINEAGE_DEDUP ? ec.getLineageItem(input1):
-					LineageItemUtils.rDecompress(ec.getLineageItem(input1));
-				ec.setScalarOutput(output_name, new StringObject(Explain.explain(li)));
+				LineageItem li = ec.getLineageItem(input1);
+				String out = !DMLScript.LINEAGE_DEDUP ? Explain.explain(li) :
+					Explain.explain(li) + LineageDedupUtils.mergeExplainDedupBlocks(ec);
+				ec.setScalarOutput(output_name, new StringObject(out));
+				break;
+			}
+			case COUNT_DISTINCT:
+			case COUNT_DISTINCT_APPROX: {
+				if( !ec.getVariables().keySet().contains(input1.getName()) )
+					throw new DMLRuntimeException("Variable '" + input1.getName() + "' does not exist.");
+				MatrixBlock input = ec.getMatrixInput(input1.getName());
+				CountDistinctOperator op = new CountDistinctOperator(_type);
+				int res = LibMatrixCountDistinct.estimateDistinctValues(input, op);
+				ec.releaseMatrixInput(input1.getName());
+				ec.setScalarOutput(output_name, new IntObject(res));
 				break;
 			}
 			default: {

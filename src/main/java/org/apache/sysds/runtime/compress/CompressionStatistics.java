@@ -19,47 +19,43 @@
 
 package org.apache.sysds.runtime.compress;
 
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.sysds.runtime.compress.colgroup.ColGroup;
-import org.apache.sysds.runtime.compress.colgroup.ColGroup.CompressionType;
+import org.apache.sysds.runtime.compress.colgroup.AColGroup;
 
+/**
+ * Compression Statistics contain the main information gathered from the compression, such as sizes of the original
+ * matrix, vs the compressed representation at different stages of the compression.
+ */
 public class CompressionStatistics {
 
-	private ArrayList<Double> timePhases = new ArrayList<>();
-	public double ratio;
-	public long originalSize;
-	public long estimatedSizeColGroups;
+	// sizes while compressing
+	public long estimatedSizeCoCoded;
 	public long estimatedSizeCols;
+	public long compressedInitialSize;
+
+	// sizes before compression
+	public long originalSize;
+	public long denseSize;
+
+	// compressed size
 	public long size;
 
-	private Map<CompressionType, int[]> colGroupCounts;
-
-	public CompressionStatistics() {
-	}
-
-	public void setNextTimePhase(double time) {
-		timePhases.add(time);
-	}
-
-	public double getLastTimePhase() {
-		return timePhases.get(timePhases.size() - 1);
-	}
+	private Map<String, int[]> colGroupCounts;
 
 	/**
-	 * Set array of counts regarding col group types. 
+	 * Set array of counts regarding col group types.
 	 * 
 	 * The position corresponds with the enum ordinal.
 	 * 
 	 * @param colGroups list of ColGroups used in compression.
 	 */
-	public void setColGroupsCounts(List<ColGroup> colGroups) {
-		HashMap<CompressionType, int[]> ret = new HashMap<>();
-		for(ColGroup c : colGroups) {
-			CompressionType ct = c.getCompType();
+	protected void setColGroupsCounts(List<AColGroup> colGroups) {
+		HashMap<String, int[]> ret = new HashMap<>();
+		for(AColGroup c : colGroups) {
+			String ct = c.getClass().getSimpleName();
 			int colCount = c.getNumCols();
 			int[] values;
 			if(ret.containsKey(ct)) {
@@ -75,57 +71,45 @@ public class CompressionStatistics {
 		this.colGroupCounts = ret;
 	}
 
-	public Map<CompressionType, int[]> getColGroups() {
+	public Map<String, int[]> getColGroups() {
 		return colGroupCounts;
-	}
-
-	public ArrayList<Double> getTimeArrayList() {
-		return timePhases;
 	}
 
 	public String getGroupsTypesString() {
 		StringBuilder sb = new StringBuilder();
 
-		for(CompressionType ctKey : colGroupCounts.keySet()) {
+		for(String ctKey : colGroupCounts.keySet())
 			sb.append(ctKey + ":" + colGroupCounts.get(ctKey)[0] + " ");
-		}
+
 		return sb.toString();
 	}
 
 	public String getGroupsSizesString() {
 		StringBuilder sb = new StringBuilder();
-		for(CompressionType ctKey : colGroupCounts.keySet()) {
 
+		for(String ctKey : colGroupCounts.keySet())
 			sb.append(ctKey + ":" + colGroupCounts.get(ctKey)[1] + " ");
-		}
+
 		return sb.toString();
+	}
+
+	public double getRatio() {
+		return size == 0.0 ? Double.POSITIVE_INFINITY : (double) originalSize / size;
 	}
 
 	@Override
 	public String toString() {
 		StringBuilder sb = new StringBuilder();
-		sb.append("Compression Statistics:\n");
-		sb.append("\t" + getGroupsTypesString() + "\n");
-		sb.append("\t" + getGroupsSizesString() + "\n");
+		sb.append("CompressionStatistics:\n");
+		sb.append("Dense Size       : " + denseSize);
+		sb.append("Original Size    : " + originalSize);
+		sb.append("Compressed Size  : " + size);
+		sb.append("CompressionRatio : " + getRatio());
+		if(colGroupCounts != null){
+			sb.append("\t" + getGroupsTypesString() + "\n");
+			sb.append("\t" + getGroupsSizesString() + "\n");
+		}
 		return sb.toString();
 	}
 
-	public static long getSizeInMemory() {
-		long total = 16; // header
-		total += 8; // compression ratio
-		total += 8; // original size
-		total += 8; // estimated size col groups
-		total += 8; // estimated size cols
-		total += 8; // actual size
-
-		total += 8; // Array list Time phases
-		total += 8; // Map colGroup Counts
-
-		// TODO what happens if we scale number of col Groups...
-		// TODO Reduce memory usage for compression statistics.
-		total += 64; // HashMap col Groups.
-		total += 40; // ArrayList time phases
-
-		return total;
-	}
 }

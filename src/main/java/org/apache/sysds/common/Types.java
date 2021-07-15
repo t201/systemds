@@ -19,9 +19,10 @@
 
 package org.apache.sysds.common;
 
-import org.apache.sysds.runtime.DMLRuntimeException;
+import java.util.Arrays;
+import java.util.HashMap;
 
-import edu.emory.mathcs.backport.java.util.Arrays;
+import org.apache.sysds.runtime.DMLRuntimeException;
 
 public class Types
 {
@@ -37,8 +38,8 @@ public class Types
 	/**
 	 * Execution type of individual operations.
 	 */
-	public enum ExecType { CP, CP_FILE, SPARK, GPU, INVALID }
-	
+	public enum ExecType { CP, CP_FILE, SPARK, GPU, FED, INVALID }
+
 	/**
 	 * Data types (tensor, matrix, scalar, frame, object, unknown).
 	 */
@@ -53,6 +54,9 @@ public class Types
 		}
 		public boolean isFrame() {
 			return this == FRAME;
+		}
+		public boolean isMatrixOrFrame() {
+			return isMatrix() | isFrame();
 		}
 		public boolean isScalar() {
 			return this == SCALAR;
@@ -69,9 +73,10 @@ public class Types
 	 * Value types (int, double, string, boolean, unknown).
 	 */
 	public enum ValueType {
+		UINT8, // Used for parsing in UINT values from numpy.
 		FP32, FP64, INT32, INT64, BOOLEAN, STRING, UNKNOWN;
 		public boolean isNumeric() {
-			return this == INT32 || this == INT64 || this == FP32 || this == FP64;
+			return this == UINT8 || this == INT32 || this == INT64 || this == FP32 || this == FP64;
 		}
 		public boolean isUnknown() {
 			return this == UNKNOWN;
@@ -83,6 +88,7 @@ public class Types
 			switch(this) {
 				case FP32:
 				case FP64:    return "DOUBLE";
+				case UINT8:
 				case INT32:
 				case INT64:   return "INT";
 				case BOOLEAN: return "BOOLEAN";
@@ -97,11 +103,13 @@ public class Types
 				case "FP32":     return FP32;
 				case "FP64":
 				case "DOUBLE":   return FP64;
+				case "UINT8":    return UINT8;
 				case "INT32":    return INT32;
 				case "INT64":
 				case "INT":      return INT64;
 				case "BOOLEAN":  return BOOLEAN;
 				case "STRING":   return STRING;
+				case "UNKNOWN":  return UNKNOWN;
 				default:
 					throw new DMLRuntimeException("Unknown value type: "+value);
 			}
@@ -170,12 +178,14 @@ public class Types
 		}
 	}
 	
+	// these values need to match with their native counterparts (spoof cuda ops)
 	public enum AggOp {
-		SUM, SUM_SQ,
-		PROD, SUM_PROD,
-		MIN, MAX,
-		TRACE, MEAN, VAR,
-		MAXINDEX, MININDEX;
+		SUM(0), SUM_SQ(1), MIN(2), MAX(3),
+		PROD(4), SUM_PROD(5),
+		TRACE(6), MEAN(7), VAR(8),
+		MAXINDEX(9), MININDEX(10),
+		COUNT_DISTINCT(11),
+		COUNT_DISTINCT_APPROX(12);
 		
 		@Override
 		public String toString() {
@@ -186,6 +196,27 @@ public class Types
 				default:     return name().toLowerCase();
 			}
 		}
+		
+		private final int value;
+		private final static HashMap<Integer, AggOp> map = new HashMap<>();
+		
+		AggOp(int value) {
+			this.value = value;
+		}
+		
+		static {
+			for (AggOp aggOp : AggOp.values()) {
+				map.put(aggOp.value, aggOp);
+			}
+		}
+		
+		public static AggOp valueOf(int aggOp) {
+			return map.get(aggOp);
+		}
+		
+		public int getValue() {
+			return value;
+		}
 	}
 	
 	// Operations that require 1 operand
@@ -193,7 +224,7 @@ public class Types
 		ABS, ACOS, ASIN, ASSERT, ATAN, CAST_AS_SCALAR, CAST_AS_MATRIX,
 		CAST_AS_FRAME, CAST_AS_DOUBLE, CAST_AS_INT, CAST_AS_BOOLEAN,
 		CEIL, CHOLESKY, COS, COSH, CUMMAX, CUMMIN, CUMPROD, CUMSUM,
-		CUMSUMPROD, DETECTSCHEMA, EIGEN, EXISTS, EXP, FLOOR, INVERSE,
+		CUMSUMPROD, DETECTSCHEMA, COLNAMES, EIGEN, EXISTS, EXP, FLOOR, INVERSE,
 		IQM, ISNA, ISNAN, ISINF, LENGTH, LINEAGE, LOG, NCOL, NOT, NROW,
 		MEDIAN, PRINT, ROUND, SIN, SINH, SIGN, SOFTMAX, SQRT, STOP, SVD,
 		TAN, TANH, TYPEOF,
@@ -202,6 +233,8 @@ public class Types
 		SIGMOID, //sigmoid function: 1 / (1 + exp(-X))
 		LOG_NZ, //sparse-safe log; ppred(X,0,"!=")*log(X)
 		
+		COMPRESS, DECOMPRESS, 
+
 		//low-level operators //TODO used?
 		MULT2, MINUS1_MULT, MINUS_RIGHT, 
 		POW2, SUBTRACT_NZ;
@@ -252,9 +285,11 @@ public class Types
 				case "ucum*":   return CUMPROD;
 				case "ucumk+":  return CUMSUM;
 				case "ucumk+*": return CUMSUMPROD;
+				case "detectSchema":    return DETECTSCHEMA;
 				case "*2":      return MULT2;
 				case "!":       return NOT;
 				case "^2":      return POW2;
+				case "typeOf":          return TYPEOF;
 				default:        return valueOf(opcode.toUpperCase());
 			}
 		}
@@ -264,11 +299,12 @@ public class Types
 	public enum OpOp2 {
 		AND(true), BITWAND(true), BITWOR(true), BITWSHIFTL(true), BITWSHIFTR(true),
 		BITWXOR(true), CBIND(false), CONCAT(false), COV(false), DIV(true),
-		DROP_INVALID(false), EQUAL(true), GREATER(true), GREATEREQUAL(true),
-		INTDIV(true), INTERQUANTILE(false), IQM(false), LESS(true), LESSEQUAL(true),
-		LOG(true), MAX(true), MEDIAN(false), MIN(true), MINUS(true), MODULUS(true),
-		MOMENT(false), MULT(true), NOTEQUAL(true), OR(true), PLUS(true), POW(true),
-		PRINT(false), QUANTILE(false), SOLVE(false), RBIND(false), XOR(true),
+		DROP_INVALID_TYPE(false), DROP_INVALID_LENGTH(false), EQUAL(true), GREATER(true),
+		GREATEREQUAL(true), INTDIV(true), INTERQUANTILE(false), IQM(false), LESS(true),
+		LESSEQUAL(true), LOG(true), MAP(false), MAX(true), MEDIAN(false), MIN(true), 
+		MINUS(true), MODULUS(true), MOMENT(false), MULT(true), NOTEQUAL(true), OR(true),
+		PLUS(true), POW(true), PRINT(false), QUANTILE(false), SOLVE(false), RBIND(false),
+		XOR(true),
 		//fused ML-specific operators for performance
 		MINUS_NZ(false), //sparse-safe minus: X-(mean*ppred(X,0,!=))
 		LOG_NZ(false), //sparse-safe log; ppred(X,0,"!=")*log(X,0.5)
@@ -311,7 +347,9 @@ public class Types
 				case BITWXOR:      return "bitwXor";
 				case BITWSHIFTL:   return "bitwShiftL";
 				case BITWSHIFTR:   return "bitwShiftR";
-				case DROP_INVALID: return "dropInvalid";
+				case DROP_INVALID_TYPE: return "dropInvalidType";
+				case DROP_INVALID_LENGTH: return "dropInvalidLength";
+				case MAP:          return "_map";
 				default:           return name().toLowerCase();
 			}
 		}
@@ -343,7 +381,9 @@ public class Types
 				case "bitwXor":     return BITWXOR;
 				case "bitwShiftL":  return BITWSHIFTL;
 				case "bitwShiftR":  return BITWSHIFTR;
-				case "dropInvalid": return DROP_INVALID;
+				case "dropInvalidType": return DROP_INVALID_TYPE;
+				case "dropInvalidLength": return DROP_INVALID_LENGTH;
+				case "map":         return MAP;
 				default:            return valueOf(opcode.toUpperCase());
 			}
 		}
@@ -424,7 +464,7 @@ public class Types
 		INVALID, CDF, INVCDF, GROUPEDAGG, RMEMPTY, REPLACE, REXPAND,
 		LOWER_TRI, UPPER_TRI,
 		TRANSFORMAPPLY, TRANSFORMDECODE, TRANSFORMCOLMAP, TRANSFORMMETA,
-		TOSTRING, LIST, PARAMSERV
+		TOKENIZE, TOSTRING, LIST, PARAMSERV
 	}
 	
 	public enum OpOpDnn {
@@ -437,7 +477,7 @@ public class Types
 	}
 	
 	public enum OpOpDG {
-		RAND, SEQ, SINIT, SAMPLE, TIME
+		RAND, SEQ, FRAMEINIT, SINIT, SAMPLE, TIME
 	}
 	
 	public enum OpOpData {
@@ -481,9 +521,12 @@ public class Types
 		CSV,    // text dense representation
 		LIBSVM, // text libsvm sparse row representation
 		JSONL,  // text nested JSON (Line) representation
-		BINARY; // binary block representation (dense/sparse/ultra-sparse) 
+		BINARY, // binary block representation (dense/sparse/ultra-sparse)
+		FEDERATED, // A federated matrix
+		PROTO,  // protocol buffer representation
+		HDF5; // Hierarchical Data Format (HDF)
 		
-		public boolean isIJVFormat() {
+		public boolean isIJV() {
 			return this == TEXT || this == MM;
 		}
 		
@@ -532,8 +575,13 @@ public class Types
 			}
 			catch(Exception ex) {
 				throw new DMLRuntimeException("Unknown file format: "+fmt
-					+ " (valid values: "+Arrays.toString(FileFormat.values())+")");
+					+ " (valid values: " + Arrays.toString(FileFormat.values())+")");
 			}
 		}
 	}
+	
+	/** Common type for both function statement blocks and function program blocks **/
+	public static interface FunctionBlock {
+		public FunctionBlock cloneFunctionBlock();
+	} 
 }

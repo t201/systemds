@@ -19,7 +19,7 @@
 
 package org.apache.sysds.lops;
 
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.instructions.InstructionUtils;
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.OpOp2;
@@ -34,6 +34,7 @@ import org.apache.sysds.common.Types.ValueType;
 public class Binary extends Lop 
 {
 	private OpOp2 operation;
+	private final int _numThreads;
 	
 	/**
 	 * Constructor to perform a binary operation.
@@ -45,9 +46,15 @@ public class Binary extends Lop
 	 * @param vt value type
 	 * @param et exec type
 	 */
+	
 	public Binary(Lop input1, Lop input2, OpOp2 op, DataType dt, ValueType vt, ExecType et) {
+		this(input1, input2, op, dt, vt, et, 1);
+	}
+	
+	public Binary(Lop input1, Lop input2, OpOp2 op, DataType dt, ValueType vt, ExecType et, int k) {
 		super(Lop.Type.Binary, dt, vt);
 		init(input1, input2, op, dt, vt, et);
+		_numThreads = k;
 	}
 	
 	private void init(Lop input1, Lop input2, OpOp2 op, DataType dt, ValueType vt, ExecType et)  {
@@ -74,10 +81,17 @@ public class Binary extends Lop
 
 	@Override
 	public String getInstructions(String input1, String input2, String output) {
-		return InstructionUtils.concatOperands(
-			getExecType().toString(), getOpcode(),
+		String ret = InstructionUtils.concatOperands(
+			getExecType().name(), getOpcode(),
 			getInputs().get(0).prepInputOperand(input1),
 			getInputs().get(1).prepInputOperand(input2),
 			prepOutputOperand(output));
+
+		if ( getExecType() == ExecType.CP )
+			ret = InstructionUtils.concatOperands(ret, String.valueOf(_numThreads));
+		else if( getExecType() == ExecType.FED )
+			ret = InstructionUtils.concatOperands(ret, String.valueOf(_numThreads), _fedOutput.name());
+
+		return ret;
 	}
 }

@@ -19,32 +19,36 @@
 
 package org.apache.sysds.hops;
 
+import java.util.HashMap;
+import java.util.Map.Entry;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.FileFormat;
 import org.apache.sysds.common.Types.OpOpData;
 import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.conf.CompilerConfig.ConfigType;
 import org.apache.sysds.conf.ConfigurationManager;
+import org.apache.sysds.hops.rewrite.HopRewriteUtils;
 import org.apache.sysds.lops.Data;
 import org.apache.sysds.lops.Federated;
 import org.apache.sysds.lops.Lop;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.lops.LopsException;
 import org.apache.sysds.lops.Sql;
 import org.apache.sysds.parser.DataExpression;
+import static org.apache.sysds.parser.DataExpression.FED_RANGES;
 import org.apache.sysds.runtime.controlprogram.caching.MatrixObject.UpdateType;
 import org.apache.sysds.runtime.meta.DataCharacteristics;
 import org.apache.sysds.runtime.util.LocalFileUtils;
-
-import java.util.HashMap;
-import java.util.Map.Entry;
 
 /**
  *  A DataOp can be either a persistent read/write or transient read/write - writes will always have at least one input,
  *  but all types can have parameters (e.g., for csv literals of delimiter, header, etc).
  */
-public class DataOp extends Hop 
-{
+public class DataOp extends Hop {
+	private static final Log LOG =  LogFactory.getLog(DataOp.class.getName());
 	private OpOpData _op;
 	private String _fileName = null;
 	
@@ -94,7 +98,7 @@ public class DataOp extends Hop
 		setNnz(nnz);
 		
 		if( dop == OpOpData.TRANSIENTREAD )
-			setInputFormatType(FileFormat.BINARY);
+			setFileFormat(FileFormat.BINARY);
 	}
 
 	public DataOp(String l, DataType dt, ValueType vt, OpOpData dop,
@@ -123,13 +127,16 @@ public class DataOp extends Hop
 			String s = e.getKey();
 			Hop input = e.getValue();
 			getInput().add(input);
+			if (LOG.isDebugEnabled()){
+				LOG.debug(String.format("%15s - %s",s,input));
+			}
 			input.getParent().add(this);
 
 			_paramIndexMap.put(s, index);
 			index++;
 		}
 		if (dop == OpOpData.TRANSIENTREAD ){
-			setInputFormatType(FileFormat.BINARY);
+			setFileFormat(FileFormat.BINARY);
 		}
 		
 		if( params.containsKey(DataExpression.READROWPARAM) )
@@ -151,7 +158,7 @@ public class DataOp extends Hop
 		_fileName = fname;
 
 		if (dop == OpOpData.TRANSIENTWRITE || dop == OpOpData.FUNCTIONOUTPUT )
-			setInputFormatType(FileFormat.BINARY);
+			setFileFormat(FileFormat.BINARY);
 	}
 	
 	/**
@@ -189,7 +196,7 @@ public class DataOp extends Hop
 		}
 
 		if (dop == OpOpData.TRANSIENTWRITE)
-			setInputFormatType(FileFormat.BINARY);
+			setFileFormat(FileFormat.BINARY);
 	}
 
 	/** Check for N (READ) or N+1 (WRITE) inputs. */
@@ -265,8 +272,7 @@ public class DataOp extends Hop
 		// construct lops for all input parameters
 		HashMap<String, Lop> inputLops = new HashMap<>();
 		for (Entry<String, Integer> cur : _paramIndexMap.entrySet()) {
-			inputLops.put(cur.getKey(), getInput().get(cur.getValue())
-					.constructLops());
+			inputLops.put(cur.getKey(), getInput().get(cur.getValue()).constructLops());
 		}
 
 		// Create the lop
@@ -274,27 +280,27 @@ public class DataOp extends Hop
 		{
 			case TRANSIENTREAD:
 				l = new Data(_op, null, inputLops, getName(), null, 
-						getDataType(), getValueType(), getInputFormatType());
+						getDataType(), getValueType(), getFileFormat());
 				setOutputDimensions(l);
 				break;
 				
 			case PERSISTENTREAD:
 				l = new Data(_op, null, inputLops, getName(), null, 
-						getDataType(), getValueType(), getInputFormatType());
+						getDataType(), getValueType(), getFileFormat());
 				l.getOutputParameters().setDimensions(getDim1(), getDim2(), _inBlocksize, getNnz(), getUpdateType());
 				break;
 				
 			case PERSISTENTWRITE:
 			case FUNCTIONOUTPUT:
 				l = new Data(_op, getInput().get(0).constructLops(), inputLops, getName(), null, 
-					getDataType(), getValueType(), getInputFormatType());
+					getDataType(), getValueType(), getFileFormat());
 				((Data)l).setExecType(et);
 				setOutputDimensions(l);
 				break;
 				
 			case TRANSIENTWRITE:
 				l = new Data(_op, getInput().get(0).constructLops(), inputLops, getName(), null,
-						getDataType(), getValueType(), getInputFormatType());
+						getDataType(), getValueType(), getFileFormat());
 				setOutputDimensions(l);
 				break;
 				
@@ -316,16 +322,16 @@ public class DataOp extends Hop
 		
 		//add reblock/checkpoint lops if necessary
 		constructAndSetLopsDataFlowProperties();
-	
+
 		return getLops();
 
 	}
 
-	public void setInputFormatType(FileFormat ft) {
+	public void setFileFormat(FileFormat ft) {
 		_inFormat = ft;
 	}
 
-	public FileFormat getInputFormatType() {
+	public FileFormat getFileFormat() {
 		return _inFormat;
 	}
 	
@@ -347,6 +353,10 @@ public class DataOp extends Hop
 	
 	public boolean isPersistentReadWrite() {
 		return( _op == OpOpData.PERSISTENTREAD || _op == OpOpData.PERSISTENTWRITE );
+	}
+
+	public boolean isFederatedData(){
+		return _op == OpOpData.FEDERATED;
 	}
 
 	@Override
@@ -481,23 +491,41 @@ public class DataOp extends Hop
 		
 		return _etype;
 	}
-	
+
+	/**
+	 * True if execution is federated, if output is federated, or if OpOpData is federated.
+	 * @return true if federated
+	 */
 	@Override
-	public void refreshSizeInformation()
-	{
-		if( _op == OpOpData.PERSISTENTWRITE || _op == OpOpData.TRANSIENTWRITE )
-		{
+	public boolean isFederated() {
+		return super.isFederated() || getOp() == OpOpData.FEDERATED;
+	}
+
+	@Override
+	public void refreshSizeInformation() {
+		if( _op == OpOpData.PERSISTENTWRITE || _op == OpOpData.TRANSIENTWRITE ) {
 			Hop input1 = getInput().get(0);
 			setDim1(input1.getDim1());
 			setDim2(input1.getDim2());
 			setNnz(input1.getNnz());
 		}
-		else //READ
-		{
+		else if( _op == OpOpData.FEDERATED ) {
+			Hop ranges = getInput().get(getParameterIndex(FED_RANGES));
+			long nrow = -1, ncol = -1;
+			for( Hop c : ranges.getInput() ) {
+				if( !(c.getInput(0) instanceof LiteralOp && c.getInput(1) instanceof LiteralOp))
+					return; // invalid size inference if not all know.
+				nrow = Math.max(nrow, HopRewriteUtils.getIntValueSafe(c.getInput(0)));
+				ncol = Math.max(ncol, HopRewriteUtils.getIntValueSafe(c.getInput(1)));
+			}
+			setDim1(nrow);
+			setDim2(ncol);
+		}
+		else { //READ
 			//do nothing; dimensions updated via set output params
 		}
 	}
-		
+
 	
 	/**
 	 * Explicitly disables recompilation of transient reads, this additional information 
@@ -585,5 +613,4 @@ public class DataOp extends Hop
 			}
 		}
 	}
-
 }

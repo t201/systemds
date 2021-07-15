@@ -27,6 +27,7 @@ import org.apache.sysds.hops.codegen.template.TemplateUtils;
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.runtime.util.DnnUtils;
 import org.apache.sysds.runtime.util.UtilFunctions;
+import org.apache.sysds.hops.codegen.SpoofCompiler.GeneratorAPI;
 
 public class CNodeNary extends CNode
 {
@@ -43,7 +44,7 @@ public class CNodeNary extends CNode
 					return true;
 			return false;
 		}
-		public String getTemplate(boolean sparseGen, long len, ArrayList<CNode> inputs) {
+		public String getTemplate(boolean sparseGen, long len, ArrayList<CNode> inputs, GeneratorAPI api) {
 			switch (this) {
 				case VECT_CBIND:
 					StringBuilder sb = new StringBuilder();
@@ -111,30 +112,30 @@ public class CNodeNary extends CNode
 	}
 	
 	@Override
-	public String codegen(boolean sparse) {
+	public String codegen(boolean sparse, GeneratorAPI api) {
 		if( isGenerated() )
 			return "";
-		
+				
 		StringBuilder sb = new StringBuilder();
 		
 		//generate children
 		for(CNode in : _inputs)
-			sb.append(in.codegen(sparse));
+			sb.append(in.codegen(sparse, api));
 		
 		//generate nary operation (use sparse template, if data input)
 		boolean lsparse = sparse && (_inputs.get(0) instanceof CNodeData
 			&& _inputs.get(0).getVarname().startsWith("a")
 			&& !_inputs.get(0).isLiteral());
 		String var = createVarname();
-		String tmp = _type.getTemplate(lsparse, _cols, _inputs);
+		String tmp = _type.getTemplate(lsparse, _cols, _inputs, api);
 		tmp = tmp.replace("%TMP%", var);
 		
 		//replace sparse and dense inputs
 		String varj1 = _inputs.get(0).getVarname();
 		String varj2 = _inputs.get(1).getVarname();
 		tmp = (_type == NaryType.VECT_CONV2DMM) ?
-			replaceBinaryPlaceholders(tmp, new String[]{varj1,varj2}, false) :
-			replaceUnaryPlaceholders(tmp, varj1, false);
+			replaceBinaryPlaceholders(tmp, new String[]{varj1,varj2}, false, api) :
+			replaceUnaryPlaceholders(tmp, varj1, false, api);
 		
 		sb.append(tmp);
 		
@@ -219,7 +220,18 @@ public class CNodeNary extends CNode
 		return super.equals(that)
 			&& _type == that._type;
 	}
-	
+
+	@Override
+	public boolean isSupported(GeneratorAPI api) {
+		boolean is_supported = (api == GeneratorAPI.JAVA);
+		int i = 0;
+		while(is_supported && i < _inputs.size()) {
+			CNode in = _inputs.get(i++);
+			is_supported = in.isSupported(api);
+		}
+		return  is_supported;
+	}
+
 	private static String getDnnParameterString(List<CNode> inputs, boolean unary) {
 		int off = unary ? 0 : 1;
 		
@@ -239,7 +251,7 @@ public class CNodeNary extends CNode
 	}
 	
 
-	private String replaceBinaryPlaceholders(String tmp, String[] vars, boolean vectIn) {
+	private String replaceBinaryPlaceholders(String tmp, String[] vars, boolean vectIn, GeneratorAPI api) {
 		//replace sparse and dense inputs
 		for( int j=0; j<2; j++ ) {
 			String varj = vars[j];
@@ -247,8 +259,11 @@ public class CNodeNary extends CNode
 			//replace sparse and dense inputs
 			tmp = tmp.replace("%IN"+(j+1)+"v%", varj+"vals");
 			tmp = tmp.replace("%IN"+(j+1)+"i%", varj+"ix");
-			tmp = tmp.replace("%IN"+(j+1)+"%", 
-				varj.startsWith("b") ? varj + ".values(rix)" : varj );
+//			tmp = tmp.replace("%IN"+(j+1)+"%", 
+//				varj.startsWith("b") ? varj + ".values(rix)" : varj );
+			tmp = tmp.replace("%IN"+(j+1)+"%",
+				varj.startsWith("b") ? ((api == GeneratorAPI.JAVA) ? varj + ".values(rix)" :
+					varj + ".vals(0)") : varj);
 			
 			//replace start position of main input
 			tmp = tmp.replace("%POS"+(j+1)+"%", (_inputs.get(j) instanceof CNodeData 
@@ -258,7 +273,7 @@ public class CNodeNary extends CNode
 		
 		//replace length
 		if( _inputs.get(0).getDataType().isMatrix() )
-			tmp = tmp.replace("%LEN%", _inputs.get(0).getVectorLength());
+			tmp = tmp.replace("%LEN%", _inputs.get(0).getVectorLength(api));
 		
 		return tmp;
 	}

@@ -27,7 +27,7 @@ import org.junit.Assert;
 import org.junit.Test;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.runtime.meta.MatrixCharacteristics;
 import org.apache.sysds.test.AutomatedTestBase;
@@ -112,8 +112,8 @@ public class ParForSampleTest extends AutomatedTestBase
 			runTest(true, false, null, -1);
 			
 			//read result data and meta data
-			HashMap<CellIndex, Double> B1 = readDMLMatrixFromHDFS("B1");				
-			HashMap<CellIndex, Double> B2 = readDMLMatrixFromHDFS("B2");				
+			HashMap<CellIndex, Double> B1 = readDMLMatrixFromOutputDir("B1");				
+			HashMap<CellIndex, Double> B2 = readDMLMatrixFromOutputDir("B2");				
 			MatrixCharacteristics B1mc = readDMLMetaDataFile("B1");
 			MatrixCharacteristics B2mc = readDMLMetaDataFile("B2");
 			

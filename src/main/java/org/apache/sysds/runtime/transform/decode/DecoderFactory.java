@@ -23,7 +23,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang.ArrayUtils;
 import org.apache.wink.json4j.JSONObject;
 import org.apache.sysds.common.Types.ValueType;
@@ -32,34 +31,48 @@ import org.apache.sysds.runtime.matrix.data.FrameBlock;
 import org.apache.sysds.runtime.transform.TfUtils.TfMethod;
 import org.apache.sysds.runtime.transform.meta.TfMetaUtils;
 import org.apache.sysds.runtime.util.UtilFunctions;
-
+import static org.apache.sysds.runtime.util.CollectionUtils.except;
+import static org.apache.sysds.runtime.util.CollectionUtils.unionDistinct;
 
 public class DecoderFactory 
 {
+	public enum DecoderType {
+		Dummycode, 
+		PassThrough,
+		Recode
+	};
+	
 	public static Decoder createDecoder(String spec, String[] colnames, ValueType[] schema, FrameBlock meta) {
-		return createDecoder(spec, colnames, schema, meta, meta.getNumColumns());
+		return createDecoder(spec, colnames, schema, meta, meta.getNumColumns(), -1, -1);
 	}
 	
-	@SuppressWarnings("unchecked")
-	public static Decoder createDecoder(String spec, String[] colnames, ValueType[] schema, FrameBlock meta, int clen) 
+	public static Decoder createDecoder(String spec, String[] colnames, ValueType[] schema, FrameBlock meta, int clen) {
+		return createDecoder(spec, colnames, schema, meta, clen, -1, -1);
+	}
+
+	public static Decoder createDecoder(String spec, String[] colnames, ValueType[] schema, FrameBlock meta, int minCol,
+		int maxCol) {
+		return createDecoder(spec, colnames, schema, meta, meta.getNumColumns(), minCol, maxCol);
+	}
+
+	public static Decoder createDecoder(String spec, String[] colnames, ValueType[] schema,
+		FrameBlock meta, int clen, int minCol, int maxCol)
 	{
 		Decoder decoder = null;
 		
-		try
-		{
+		try {
 			//parse transform specification
 			JSONObject jSpec = new JSONObject(spec);
 			List<Decoder> ldecoders = new ArrayList<>();
 			
 			//create decoders 'recode', 'dummy' and 'pass-through'
 			List<Integer> rcIDs = Arrays.asList(ArrayUtils.toObject(
-					TfMetaUtils.parseJsonIDList(jSpec, colnames, TfMethod.RECODE.toString())));
+					TfMetaUtils.parseJsonIDList(jSpec, colnames, TfMethod.RECODE.toString(), minCol, maxCol)));
 			List<Integer> dcIDs = Arrays.asList(ArrayUtils.toObject(
-					TfMetaUtils.parseJsonIDList(jSpec, colnames, TfMethod.DUMMYCODE.toString()))); 
-			rcIDs = new ArrayList<Integer>(CollectionUtils.union(rcIDs, dcIDs));
+					TfMetaUtils.parseJsonIDList(jSpec, colnames, TfMethod.DUMMYCODE.toString(), minCol, maxCol)));
+			rcIDs = unionDistinct(rcIDs, dcIDs);
 			int len = dcIDs.isEmpty() ? Math.min(meta.getNumColumns(), clen) : meta.getNumColumns();
-			List<Integer> ptIDs = new ArrayList<Integer>(CollectionUtils
-				.subtract(UtilFunctions.getSeqList(1, len, 1), rcIDs));
+			List<Integer> ptIDs = except(UtilFunctions.getSeqList(1, len, 1), rcIDs);
 			
 			//create default schema if unspecified (with double columns for pass-through)
 			if( schema == null ) {
@@ -93,5 +106,29 @@ public class DecoderFactory
 		}
 		
 		return decoder;
+	}
+	
+	public static int getDecoderType(Decoder decoder) {
+		if( decoder instanceof DecoderDummycode )
+			return DecoderType.Dummycode.ordinal();
+		else if( decoder instanceof DecoderRecode )
+			return DecoderType.Recode.ordinal();
+		else if( decoder instanceof DecoderPassThrough )
+			return DecoderType.PassThrough.ordinal();
+		throw new DMLRuntimeException("Unsupported decoder type: "
+			+ decoder.getClass().getCanonicalName());
+	}
+	
+	public static Decoder createInstance(int type) {
+		DecoderType dtype = DecoderType.values()[type];
+		
+		// create instance
+		switch(dtype) {
+			case Dummycode:   return new DecoderDummycode(null, null);
+			case PassThrough: return new DecoderPassThrough(null, null, null);
+			case Recode:      return new DecoderRecode(null, false, null);
+			default:
+				throw new DMLRuntimeException("Unsupported Encoder Type used:  " + dtype);
+		}
 	}
 }

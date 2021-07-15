@@ -25,7 +25,7 @@ import org.junit.Test;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
 import org.apache.sysds.hops.OptimizerUtils;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.lops.MMTSJ.MMTSJType;
 import org.apache.sysds.runtime.instructions.InstructionUtils;
 import org.apache.sysds.runtime.matrix.data.LibCommonsMath;
@@ -190,7 +190,7 @@ public class ScalableDecompositionTest extends AutomatedTestBase
 					MatrixBlock AtA = A.transposeSelfMatrixMultOperations(new MatrixBlock(), MMTSJType.LEFT);
 					writeInputMatrixWithMTD("A", AtA, false);
 					runTest(true, false, null, -1);
-					HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("C");
+					HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("C");
 					MatrixBlock C2 = LibCommonsMath.unaryOperations(AtA, "cholesky");
 					TestUtils.compareMatrices(dmlfile, C2, eps);
 					break;
@@ -202,7 +202,7 @@ public class ScalableDecompositionTest extends AutomatedTestBase
 					writeInputMatrixWithMTD("A", A, false);
 					writeInputMatrixWithMTD("B", y, false);
 					runTest(true, false, null, -1);
-					HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("C");
+					HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("C");
 					MatrixBlock C2 = LibCommonsMath.matrixMatrixOperations(A, b, "solve");
 					TestUtils.compareMatrices(dmlfile, C2, eps);
 					break;
@@ -214,7 +214,7 @@ public class ScalableDecompositionTest extends AutomatedTestBase
 					MatrixBlock[] C = LibCommonsMath.multiReturnOperations(A, "lu");
 					String[] outputs = new String[]{"C","D","E"};
 					for(int i=0; i<outputs.length; i++) {
-						HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS(outputs[i]);
+						HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir(outputs[i]);
 						TestUtils.compareMatrices(dmlfile, C[i], eps);
 					}
 					break;
@@ -226,7 +226,7 @@ public class ScalableDecompositionTest extends AutomatedTestBase
 					MatrixBlock[] C = LibCommonsMath.multiReturnOperations(A, "qr");
 					String[] outputs = new String[]{"C","D","E"};
 					for(int i=0; i<outputs.length; i++) {
-						HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS(outputs[i]);
+						HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir(outputs[i]);
 						TestUtils.compareMatrices(dmlfile, C[i], eps);
 					}
 					break;
@@ -235,7 +235,7 @@ public class ScalableDecompositionTest extends AutomatedTestBase
 					MatrixBlock A = MatrixBlock.randOperations(rows, cols, 1.0, -5, 10, "uniform", 7);
 					writeInputMatrixWithMTD("A", A, false);
 					runTest(true, false, null, -1);
-					HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("C");
+					HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("C");
 					MatrixBlock C2 = LibCommonsMath.unaryOperations(A, "inverse");
 					TestUtils.compareMatrices(dmlfile, C2, eps);
 					break;

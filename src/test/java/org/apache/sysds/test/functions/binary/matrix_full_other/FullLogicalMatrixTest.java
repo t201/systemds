@@ -26,7 +26,7 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
@@ -45,8 +45,8 @@ public class FullLogicalMatrixTest extends AutomatedTestBase
 	private final static String TEST_CLASS_DIR = TEST_DIR + FullLogicalMatrixTest.class.getSimpleName() + "/";
 	private final static double eps = 1e-10;
 
-	private final static int rows1 = 1383;
-	private final static int cols1 = 1432;
+	private final static int rows1 = 1183;
+	private final static int cols1 = 1032;
 
 	private final static double sparsity1 = 0.7;
 	private final static double sparsity2 = 0.01;
@@ -421,12 +421,13 @@ public class FullLogicalMatrixTest extends AutomatedTestBase
 			writeInputMatrixWithMTD("B", B, true);
 
 			//run tests
+			
 			runTest(true, false, null, -1);
 			runRScript(true);
 
 			//compare matrices
-			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("C");
-			HashMap<CellIndex, Double> rfile  = readRMatrixFromFS("C");
+			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("C");
+			HashMap<CellIndex, Double> rfile  = readRMatrixFromExpectedDir("C");
 			TestUtils.compareMatrices(dmlfile, rfile, eps, "Stat-DML", "Stat-R");
 		}
 		finally

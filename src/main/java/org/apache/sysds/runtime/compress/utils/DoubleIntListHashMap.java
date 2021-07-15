@@ -20,6 +20,8 @@
 package org.apache.sysds.runtime.compress.utils;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 
 /**
  * This class provides a memory-efficient replacement for {@code HashMap<Double,IntArrayList>} for restricted use cases.
@@ -48,7 +50,15 @@ public class DoubleIntListHashMap extends CustomHashMap {
 
 		// compute entry index position
 		int hash = hash(key);
+		return getHash(key, hash);
+	}
+
+	private IntArrayList getHash(double key, int hash) {
 		int ix = indexFor(hash, _data.length);
+		return getHashIndex(key, ix);
+	}
+
+	private IntArrayList getHashIndex(double key, int ix) {
 
 		// find entry
 		for(DIListEntry e = _data[ix]; e != null; e = e.next) {
@@ -80,6 +90,38 @@ public class DoubleIntListHashMap extends CustomHashMap {
 			resize();
 	}
 
+	public void appendValue(double key, int value) {
+		int hash = hash(key);
+		int ix = indexFor(hash, _data.length);
+		IntArrayList lstPtr = null; // The list to add the value to.
+		if(_data[ix] == null) {
+			lstPtr = new IntArrayList();
+			_data[ix] = new DIListEntry(key, lstPtr);
+			_size++;
+		}
+		else {
+			for(DIListEntry e = _data[ix]; e != null; e = e.next) {
+				if(e.key == key) {
+					lstPtr = e.value;
+					break;
+				}
+				else if(e.next == null) {
+					lstPtr = new IntArrayList();
+					// Swap to place the new value, in front.
+					DIListEntry eOld = _data[ix];
+					_data[ix] = new DIListEntry(key, lstPtr);
+					_data[ix].next = eOld;
+					_size++;
+					break;
+				}
+				DblArrayIntListHashMap.hashMissCount++;
+			}
+		}
+		lstPtr.appendValue(value);
+		if(_size >= LOAD_FACTOR * _data.length)
+			resize();
+	}
+
 	public ArrayList<DIListEntry> extractValues() {
 		ArrayList<DIListEntry> ret = new ArrayList<>();
 		for(DIListEntry e : _data) {
@@ -91,6 +133,7 @@ public class DoubleIntListHashMap extends CustomHashMap {
 				ret.add(e);
 			}
 		}
+		// Collections.sort(ret);
 
 		return ret;
 	}
@@ -118,6 +161,8 @@ public class DoubleIntListHashMap extends CustomHashMap {
 	}
 
 	private static int hash(double key) {
+		// return (int) key;
+
 		// basic double hash code (w/o object creation)
 		long bits = Double.doubleToRawLongBits(key);
 		int h = (int) (bits ^ (bits >>> 32));
@@ -133,7 +178,7 @@ public class DoubleIntListHashMap extends CustomHashMap {
 		return h & (length - 1);
 	}
 
-	public class DIListEntry {
+	public class DIListEntry implements Comparator<DIListEntry>, Comparable<DIListEntry> {
 		public double key = Double.MAX_VALUE;
 		public IntArrayList value = null;
 		public DIListEntry next = null;
@@ -143,5 +188,32 @@ public class DoubleIntListHashMap extends CustomHashMap {
 			value = evalue;
 			next = null;
 		}
+
+		@Override
+		public int compareTo(DIListEntry o) {
+			return compare(this, o);
+		}
+
+		@Override
+		public int compare(DIListEntry arg0, DIListEntry arg1) {
+			return Double.compare(arg0.key, arg1.key);
+		}
+
+		@Override
+		public String toString() {
+			StringBuilder sb = new StringBuilder();
+			sb.append("[" + key + ", ");
+			sb.append(value + ", ");
+			sb.append(next + "]");
+			return sb.toString();
+		}
+	}
+
+	@Override
+	public String toString() {
+		StringBuilder sb = new StringBuilder();
+		sb.append(this.getClass().getSimpleName() + this.hashCode());
+		sb.append("\n" + Arrays.toString(_data));
+		return sb.toString();
 	}
 }

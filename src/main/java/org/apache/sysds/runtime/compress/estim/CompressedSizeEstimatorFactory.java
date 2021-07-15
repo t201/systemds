@@ -19,18 +19,50 @@
 
 package org.apache.sysds.runtime.compress.estim;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.sysds.runtime.compress.CompressionSettings;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
 
 public class CompressedSizeEstimatorFactory {
+	protected static final Log LOG = LogFactory.getLog(CompressedSizeEstimatorFactory.class.getName());
 
-	public static final boolean EXTRACT_SAMPLE_ONCE = true;
+	public static CompressedSizeEstimator getSizeEstimator(MatrixBlock data, CompressionSettings cs) {
 
-	public static CompressedSizeEstimator getSizeEstimator(MatrixBlock data, CompressionSettings compSettings) {
-		long elements = compSettings.transposeInput ? data.getNumColumns() : data.getNumRows();
-		elements = data.getNonZeros() / (compSettings.transposeInput ? data.getNumRows() : data.getNumColumns());
-		return (compSettings.samplingRatio >= 1.0 || elements < 1000) ? new CompressedSizeEstimatorExact(data,
-			compSettings) : new CompressedSizeEstimatorSample(data, compSettings,
-				(int) Math.ceil(elements * compSettings.samplingRatio));
+		final int nRows = cs.transposed ? data.getNumColumns() : data.getNumRows();
+		final int nCols = cs.transposed ? data.getNumRows() : data.getNumColumns();
+		final int nnzRows = (int) Math.ceil(data.getNonZeros() / nCols);
+		
+		final double sampleRatio = cs.samplingRatio;
+		final int sampleSize = getSampleSize(sampleRatio, nRows, cs.minimumSampleSize);
+
+		final CompressedSizeEstimator est = (shouldUseExactEstimator(cs, nRows, sampleSize,
+			nnzRows)) ? new CompressedSizeEstimatorExact(data,
+				cs) : tryToMakeSampleEstimator(data, cs, sampleRatio, sampleSize, nRows, nnzRows);
+
+		LOG.debug("Estimating using: " + est);
+		return est;
+	}
+
+	private static CompressedSizeEstimator tryToMakeSampleEstimator(MatrixBlock data, CompressionSettings cs,
+		double sampleRatio, int sampleSize, int nRows, int nnzRows) {
+		CompressedSizeEstimatorSample estS = new CompressedSizeEstimatorSample(data, cs, sampleSize);
+		while(estS.getSample() == null) {
+			LOG.warn("Doubling sample size");
+			sampleSize = sampleSize * 2;
+			if(shouldUseExactEstimator(cs, nRows, sampleSize, nnzRows))
+				return new CompressedSizeEstimatorExact(data, cs);
+			else
+				estS.sampleData(sampleSize);
+		}
+		return estS;
+	}
+
+	private static boolean shouldUseExactEstimator(CompressionSettings cs, int nRows, int sampleSize, int nnzRows) {
+		return cs.samplingRatio >= 1.0 || nRows < cs.minimumSampleSize || sampleSize > nnzRows;
+	}
+
+	private static int getSampleSize(double sampleRatio, int nRows, int minimumSampleSize) {
+		return Math.max((int) Math.ceil(nRows * sampleRatio), minimumSampleSize);
 	}
 }

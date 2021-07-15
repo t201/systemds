@@ -31,6 +31,7 @@ import org.apache.commons.cli.Options;
 import org.apache.commons.cli.PosixParser;
 import org.apache.sysds.common.Types.ExecMode;
 import org.apache.sysds.hops.OptimizerUtils;
+import org.apache.sysds.runtime.lineage.LineageCacheConfig.LineageCachePolicy;
 import org.apache.sysds.runtime.lineage.LineageCacheConfig.ReuseCacheType;
 import org.apache.sysds.utils.Explain;
 import org.apache.sysds.utils.Explain.ExplainType;
@@ -43,12 +44,16 @@ import org.apache.sysds.utils.Explain.ExplainType;
  * to keep it consistent with {@link DMLOptions} and {@link DMLOptions}
  */
 public class DMLOptions {
+	// private static final Log LOG = LogFactory.getLog(DMLOptions.class.getName());
+
 	public final Options        options;
 	public Map<String, String>  argVals       = new HashMap<>();  // Arguments map containing either named arguments or arguments by position for a DML program
 	public String               configFile    = null;             // Path to config file if default config and default config is to be overridden
 	public boolean              clean         = false;            // Whether to clean up all SystemDS working directories (FS, DFS)
 	public boolean              stats         = false;            // Whether to record and print the statistics
 	public int                  statsCount    = 10;               // Default statistics count
+	public boolean              fedStats      = false;            // Whether to record and print the federated statistics
+	public int                  fedStatsCount = 10;               // Default federated statistics count
 	public boolean              memStats      = false;            // max memory statistics
 	public Explain.ExplainType  explainType   = Explain.ExplainType.NONE;  // Whether to print the "Explain" and if so, what type
 	public ExecMode             execMode      = OptimizerUtils.getDefaultExecutionMode();  // Execution mode standalone, MR, Spark or a hybrid
@@ -60,9 +65,13 @@ public class DMLOptions {
 	public boolean              help          = false;            // whether to print the usage option
 	public boolean              lineage       = false;            // whether compute lineage trace
 	public boolean              lineage_dedup = false;            // whether deduplicate lineage items
-	public ReuseCacheType       linReuseType  = ReuseCacheType.NONE;
+	public ReuseCacheType       linReuseType  = ReuseCacheType.NONE; // reuse type (full, partial, hybrid)
+	public LineageCachePolicy   linCachePolicy= LineageCachePolicy.COSTNSIZE; // lineage cache eviction policy
+	public boolean              lineage_estimate = false;         // whether estimate reuse benefits
+	public boolean              lineage_debugger = false;         // whether enable lineage debugger
 	public boolean              fedWorker     = false;
 	public int                  fedWorkerPort = -1;
+	public boolean              checkPrivacy  = false;            // Check which privacy constraints are loaded and checked during federated execution 
 	
 	public final static DMLOptions defaultOptions = new DMLOptions(null);
 
@@ -78,6 +87,8 @@ public class DMLOptions {
 			", clean=" + clean +
 			", stats=" + stats +
 			", statsCount=" + statsCount +
+			", fedStats=" + fedStats +
+			", fedStatsCount=" + fedStatsCount +
 			", memStats=" + memStats +
 			", explainType=" + explainType +
 			", execMode=" + execMode +
@@ -126,6 +137,16 @@ public class DMLOptions {
 							dmlOptions.linReuseType = ReuseCacheType.REUSE_HYBRID;
 						else if (lineageType.equalsIgnoreCase("none"))
 							dmlOptions.linReuseType = ReuseCacheType.NONE;
+						else if (lineageType.equalsIgnoreCase("policy_lru"))
+							dmlOptions.linCachePolicy = LineageCachePolicy.LRU;
+						else if (lineageType.equalsIgnoreCase("policy_costnsize"))
+							dmlOptions.linCachePolicy = LineageCachePolicy.COSTNSIZE;
+						else if (lineageType.equalsIgnoreCase("policy_dagheight"))
+							dmlOptions.linCachePolicy = LineageCachePolicy.DAGHEIGHT;
+						else if (lineageType.equalsIgnoreCase("estimate"))
+							dmlOptions.lineage_estimate = lineageType.equalsIgnoreCase("estimate");
+						else if (lineageType.equalsIgnoreCase("debugger"))
+							dmlOptions.lineage_debugger = lineageType.equalsIgnoreCase("debugger");							
 						else
 							throw new org.apache.commons.cli.ParseException(
 								"Invalid argument specified for -lineage option: " + lineageType);
@@ -173,6 +194,17 @@ public class DMLOptions {
 					dmlOptions.statsCount = Integer.parseInt(statsCount);
 				} catch (NumberFormatException e) {
 					throw new org.apache.commons.cli.ParseException("Invalid argument specified for -stats option, must be a valid integer");
+				}
+			}
+		}
+		dmlOptions.fedStats = line.hasOption("fedStats");
+		if (dmlOptions.fedStats) {
+			String fedStatsCount = line.getOptionValue("fedStats");
+			if(fedStatsCount != null) {
+				try {
+					dmlOptions.fedStatsCount = Integer.parseInt(fedStatsCount);
+				} catch (NumberFormatException e) {
+					throw new org.apache.commons.cli.ParseException("Invalid argument specified for -fedStats option, must be a valid integer");
 				}
 			}
 		}
@@ -226,6 +258,8 @@ public class DMLOptions {
 			}
 		}
 
+		dmlOptions.checkPrivacy = line.hasOption("checkPrivacy");
+
 		return dmlOptions;
 	}
 	
@@ -246,6 +280,9 @@ public class DMLOptions {
 		Option statsOpt = OptionBuilder.withArgName("count")
 			.withDescription("monitors and reports summary execution statistics; heavy hitter <count> is 10 unless overridden; default off")
 			.hasOptionalArg().create("stats");
+		Option fedStatsOpt = OptionBuilder.withArgName("count")
+			.withDescription("monitors and reports summary execution statistics of federated workers; heavy hitter <count> is 10 unless overridden; default off")
+			.hasOptionalArg().create("fedStats");
 		Option memOpt = OptionBuilder.withDescription("monitors and reports max memory consumption in CP; default off")
 			.create("mem");
 		Option explainOpt = OptionBuilder.withArgName("level")
@@ -273,10 +310,14 @@ public class DMLOptions {
 			.hasOptionalArgs().create("lineage");
 		Option fedOpt = OptionBuilder.withDescription("starts a federated worker with the given argument as the port.")
 			.hasOptionalArg().create("w");
+		Option checkPrivacy = OptionBuilder
+			.withDescription("Check which privacy constraints are loaded and checked during federated execution")
+			.create("checkPrivacy");
 		
 		options.addOption(configOpt);
 		options.addOption(cleanOpt);
 		options.addOption(statsOpt);
+		options.addOption(fedStatsOpt);
 		options.addOption(memOpt);
 		options.addOption(explainOpt);
 		options.addOption(execOpt);
@@ -285,6 +326,7 @@ public class DMLOptions {
 		options.addOption(pythonOpt);
 		options.addOption(lineageOpt);
 		options.addOption(fedOpt);
+		options.addOption(checkPrivacy);
 
 		// Either a clean(-clean), a file(-f), a script(-s) or help(-help) needs to be specified
 		OptionGroup fileOrScriptOpt = new OptionGroup()

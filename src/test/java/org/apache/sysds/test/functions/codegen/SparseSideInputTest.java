@@ -22,18 +22,22 @@ package org.apache.sysds.test.functions.codegen;
 import java.io.File;
 import java.util.HashMap;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.sysds.common.Types.ExecMode;
 import org.apache.sysds.hops.OptimizerUtils;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
 import org.apache.sysds.test.TestUtils;
+import org.junit.Assert;
+import org.junit.Test;
 
 public class SparseSideInputTest extends AutomatedTestBase 
 {
+	private static final Log LOG = LogFactory.getLog(SparseSideInputTest.class.getName());
+
 	private static final String TEST_NAME = "SparseSideInput";
 	private static final String TEST_NAME1 = TEST_NAME+"1"; //row sum(X/rowSums(X)+Y)
 	private static final String TEST_NAME2 = TEST_NAME+"2"; //cell sum(abs(X^2)+Y)
@@ -153,7 +157,7 @@ public class SparseSideInputTest extends AutomatedTestBase
 			
 			String HOME = SCRIPT_DIR + TEST_DIR;
 			fullDMLScriptName = HOME + testname + ".dml";
-			programArgs = new String[]{"-explain", "-stats", "-args", 
+			programArgs = new String[]{"-stats","-explain", "-args", 
 				input("X"), input("Y"), output("R") };
 			
 			fullRScriptName = HOME + testname + ".R";
@@ -166,12 +170,13 @@ public class SparseSideInputTest extends AutomatedTestBase
 			writeInputMatrixWithMTD("Y", Y, true);
 			
 			//run dml and r scripts
-			runTest(true, false, null, -1);
+			LOG.debug(fullDMLScriptName);
+			LOG.debug(runTest(true, false, null, -1));
 			runRScript(true); 
 			
 			//compare matrices 
-			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("R");
-			HashMap<CellIndex, Double> rfile  = readRMatrixFromFS("R");
+			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("R");
+			HashMap<CellIndex, Double> rfile  = readRMatrixFromExpectedDir("R");
 			TestUtils.compareMatrices(dmlfile, rfile, eps, "Stat-DML", "Stat-R");
 			Assert.assertTrue(heavyHittersContainsSubString("spoof") 
 				|| heavyHittersContainsSubString("sp_spoof"));
@@ -181,7 +186,6 @@ public class SparseSideInputTest extends AutomatedTestBase
 			OptimizerUtils.ALLOW_ALGEBRAIC_SIMPLIFICATION = oldFlag;
 			OptimizerUtils.ALLOW_AUTO_VECTORIZATION = true;
 			OptimizerUtils.ALLOW_OPERATOR_FUSION = true;
-			TEST_CONF = TEST_CONF2;
 		}
 	}
 	
@@ -189,7 +193,7 @@ public class SparseSideInputTest extends AutomatedTestBase
 	protected File getConfigTemplateFile() {
 		// Instrumentation in this test's output log to show custom configuration file used for template.
 		File f = new File(SCRIPT_DIR + TEST_DIR, TEST_CONF);
-		System.out.println("This test case overrides default configuration with " + f.getPath());
+		LOG.info("This test case overrides default configuration with " + f.getPath());
 		return f;
 	}
 }

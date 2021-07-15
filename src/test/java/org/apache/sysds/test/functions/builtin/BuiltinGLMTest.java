@@ -27,8 +27,8 @@ import java.util.List;
 import java.util.Random;
 
 import org.apache.sysds.common.Types;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.hops.OptimizerUtils;
-import org.apache.sysds.lops.LopProperties;
 import org.apache.sysds.runtime.matrix.data.MatrixValue;
 import org.apache.sysds.runtime.meta.MatrixCharacteristics;
 import org.apache.sysds.test.AutomatedTestBase;
@@ -39,7 +39,6 @@ import org.junit.runners.Parameterized;
 
 @RunWith(value = Parameterized.class)
 @net.jcip.annotations.NotThreadSafe
-
 public class BuiltinGLMTest extends AutomatedTestBase
 {
 	protected final static String TEST_NAME = "glmTest";
@@ -124,7 +123,7 @@ public class BuiltinGLMTest extends AutomatedTestBase
 
 
 	public void runtestGLM() {
-		Types.ExecMode platformOld = setExecMode(LopProperties.ExecType.CP);
+		Types.ExecMode platformOld = setExecMode(ExecType.CP);
 		try {
 			int rows = numRecords;                // # of rows in the training data
 			int cols = numFeatures;                // # of features in the training data
@@ -193,7 +192,7 @@ public class BuiltinGLMTest extends AutomatedTestBase
 				max_abs_beta = (max_abs_beta >= Math.abs(beta[j]) ? max_abs_beta : Math.abs(beta[j]));
 			}
 
-			HashMap<MatrixValue.CellIndex, Double> wSYSTEMDS_raw = readDMLMatrixFromHDFS("betas_SYSTEMDS");
+			HashMap<MatrixValue.CellIndex, Double> wSYSTEMDS_raw = readDMLMatrixFromOutputDir("betas_SYSTEMDS");
 			HashMap<MatrixValue.CellIndex, Double> wSYSTEMDS = new HashMap<>();
 			for (MatrixValue.CellIndex key : wSYSTEMDS_raw.keySet())
 				if (key.column == 1)
@@ -201,7 +200,7 @@ public class BuiltinGLMTest extends AutomatedTestBase
 
 			runRScript(true);
 
-			HashMap<MatrixValue.CellIndex, Double> wR = readRMatrixFromFS("betas_R");
+			HashMap<MatrixValue.CellIndex, Double> wR = readRMatrixFromExpectedDir("betas_R");
 
 			if ((distParam == 0 && linkType == 1)) { // Gaussian.*
 				//NOTE MB: Gaussian.log was the only test failing when we introduced multi-threaded

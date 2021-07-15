@@ -20,7 +20,7 @@
 package org.apache.sysds.lops;
 
  
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.ValueType;
@@ -40,6 +40,9 @@ public class MMTSJ extends Lop
 		
 		public boolean isLeft(){
 			return (this == LEFT);
+		}
+		public boolean isRight(){
+			return (this == RIGHT);
 		}
 	}
 	

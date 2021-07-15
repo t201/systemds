@@ -23,7 +23,7 @@ import org.apache.sysds.common.Types.FileFormat;
 import org.apache.sysds.lops.DataGen;
 import org.apache.sysds.lops.LeftIndex;
 import org.apache.sysds.lops.RightIndex;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.lops.MMTSJ.MMTSJType;
 import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.runtime.controlprogram.caching.CacheableData;
@@ -477,7 +477,7 @@ public class CostEstimatorStaticRuntime extends CostEstimator
 				case StringInit: //sinit
 					return d3m * d3n * DEFAULT_NFLOP_CP;
 					
-				case External: //opcodes: extfunct
+				case FCall: //opcodes: fcall
 					//note: should be invoked independently for multiple outputs
 					return d1m * d1n * d1s * DEFAULT_NFLOP_UNKNOWN;
 				

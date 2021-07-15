@@ -71,22 +71,12 @@ import org.apache.sysds.utils.Statistics;
  */
 public class OptimizationWrapper 
 {
-	
-	private static final boolean LDEBUG = false; //internal local debug level
 	private static final Log LOG = LogFactory.getLog(OptimizationWrapper.class.getName());
 	
 	//internal parameters
 	public static final double PAR_FACTOR_INFRASTRUCTURE = 1.0;
-	private static final boolean CHECK_PLAN_CORRECTNESS = false; 
-	
-	static
-	{
-		// for internal debugging only
-		if( LDEBUG ) {
-			Logger.getLogger("org.apache.sysds.runtime.controlprogram.parfor.opt")
-				.setLevel(Level.DEBUG);
-		}
-	}
+	private static final boolean CHECK_PLAN_CORRECTNESS = false;
+
 
 	/**
 	 * Called once per top-level parfor (during runtime, on parfor execute)
@@ -122,12 +112,9 @@ public class OptimizationWrapper
 			StatisticMonitor.putPFStat( pb.getID() , Stat.OPT_T, timeVal);
 	}
 
-	public static void setLogLevel( Level optLogLevel )
-	{
-		if( !LDEBUG ){ //set log level if not overwritten by internal flag
-			Logger.getLogger("org.apache.sysds.runtime.controlprogram.parfor.opt")
-				.setLevel( optLogLevel );
-		}
+	public static void setLogLevel( Level optLogLevel ) {
+		Logger.getLogger("org.apache.sysds.runtime.controlprogram.parfor.opt")
+			.setLevel( optLogLevel );
 	}
 
 	@SuppressWarnings("unused")
@@ -200,7 +187,7 @@ public class OptimizationWrapper
 				LocalVariableMap tmp = (LocalVariableMap) ec.getVariables().clone();
 				ResetType reset = ConfigurationManager.isCodegenEnabled() ? 
 					ResetType.RESET_KNOWN_DIMS : ResetType.RESET;
-				Recompiler.recompileProgramBlockHierarchy(pb.getChildBlocks(), tmp, 0, reset);
+				Recompiler.recompileProgramBlockHierarchy(pb.getChildBlocks(), tmp, 0, true, reset);
 				
 				//inter-procedural optimization (based on previous recompilation)
 				if( pb.hasFunctions() ) {
@@ -216,7 +203,7 @@ public class OptimizationWrapper
 							//reset recompilation flags according to recompileOnce because it is only safe if function is recompileOnce 
 							//because then recompiled for every execution (otherwise potential issues if func also called outside parfor)
 							ResetType reset2 = fpb.isRecompileOnce() ? reset : ResetType.NO_RESET;
-							Recompiler.recompileProgramBlockHierarchy(fpb.getChildBlocks(), new LocalVariableMap(), 0, reset2);
+							Recompiler.recompileProgramBlockHierarchy(fpb.getChildBlocks(), new LocalVariableMap(), 0, true, reset2);
 						}
 					}
 				}

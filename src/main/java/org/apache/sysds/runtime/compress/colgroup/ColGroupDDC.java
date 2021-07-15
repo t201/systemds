@@ -19,73 +19,80 @@
 
 package org.apache.sysds.runtime.compress.colgroup;
 
+import java.io.DataInput;
+import java.io.DataOutput;
+import java.io.IOException;
 import java.util.Arrays;
-import java.util.Iterator;
 
-import org.apache.sysds.runtime.compress.UncompressedBitmap;
+import org.apache.sysds.runtime.compress.colgroup.dictionary.ADictionary;
+import org.apache.sysds.runtime.compress.colgroup.dictionary.Dictionary;
+import org.apache.sysds.runtime.compress.colgroup.mapping.AMapToData;
+import org.apache.sysds.runtime.compress.colgroup.mapping.MapToByte;
+import org.apache.sysds.runtime.compress.colgroup.mapping.MapToChar;
+import org.apache.sysds.runtime.compress.colgroup.mapping.MapToFactory;
+import org.apache.sysds.runtime.compress.colgroup.mapping.MapToInt;
+import org.apache.sysds.runtime.compress.colgroup.offset.AIterator;
+import org.apache.sysds.runtime.data.SparseBlock;
 import org.apache.sysds.runtime.functionobjects.Builtin;
-import org.apache.sysds.runtime.functionobjects.KahanFunction;
-import org.apache.sysds.runtime.instructions.cp.KahanObject;
-import org.apache.sysds.runtime.matrix.data.IJV;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
+import org.apache.sysds.runtime.matrix.operators.BinaryOperator;
+import org.apache.sysds.runtime.matrix.operators.ScalarOperator;
 
 /**
  * Class to encapsulate information about a column group that is encoded with dense dictionary encoding (DDC).
  * 
- * NOTE: zero values are included at position 0 in the value dictionary, which simplifies various operations such as
- * counting the number of non-zeros.
  */
-public abstract class ColGroupDDC extends ColGroupValue {
-	private static final long serialVersionUID = -3204391646123465004L;
+public class ColGroupDDC extends ColGroupValue {
+	private static final long serialVersionUID = -5769772089913918987L;
+	
+	protected AMapToData _data;
 
-	@Override
+	protected ColGroupDDC(int numRows) {
+		super(numRows);
+	}
+
+	protected ColGroupDDC(int[] colIndices, int numRows, ADictionary dict, AMapToData data, int[] cachedCounts) {
+		super(colIndices, numRows, dict, cachedCounts);
+		_zeros = false;
+		_data = data;
+	}
+
 	public CompressionType getCompType() {
 		return CompressionType.DDC;
 	}
 
-	public ColGroupDDC() {
-		super();
-	}
-
-	protected ColGroupDDC(int[] colIndices, int numRows, UncompressedBitmap ubm) {
-		super(colIndices, numRows, ubm);
-	}
-
-	protected ColGroupDDC(int[] colIndices, int numRows, double[] values) {
-		super(colIndices, numRows, values);
-	}
-
 	@Override
-	public void decompressToBlock(MatrixBlock target, int rl, int ru) {
-		for(int i = rl; i < ru; i++) {
-			for(int colIx = 0; colIx < _colIndexes.length; colIx++) {
-				int col = _colIndexes[colIx];
-				double cellVal = getData(i, colIx);
-				target.quickSetValue(i, col, cellVal);
-			}
+	protected void decompressToBlockUnSafeSparseDictionary(MatrixBlock target, int rl, int ru, int offT,
+		SparseBlock sb) {
+		final int tCol = target.getNumColumns();
+		final double[] c = target.getDenseBlockValues();
+		offT = offT * tCol;
+		for(int i = rl; i < ru; i++, offT += tCol) {
+			final int rowIndex = _data.getIndex(i);
+			if(sb.isEmpty(rowIndex))
+				continue;
+			final int apos = sb.pos(rowIndex);
+			final int alen = sb.size(rowIndex) + apos;
+			final double[] avals = sb.values(rowIndex);
+			final int[] aix = sb.indexes(rowIndex);
+			for(int j = apos; j < alen; j++)
+				c[offT + _colIndexes[aix[j]]] += avals[j];
+
 		}
 	}
 
 	@Override
-	public void decompressToBlock(MatrixBlock target, int[] colIndexTargets) {
-		int nrow = getNumRows();
-		int ncol = getNumCols();
-		for(int i = 0; i < nrow; i++) {
-			for(int colIx = 0; colIx < ncol; colIx++) {
-				int origMatrixColIx = getColIndex(colIx);
-				int col = colIndexTargets[origMatrixColIx];
-				double cellVal = getData(i, colIx);
-				target.quickSetValue(i, col, cellVal);
-			}
-		}
-	}
+	protected void decompressToBlockUnSafeDenseDictionary(MatrixBlock target, int rl, int ru, int offT,
+		double[] values) {
+		final int nCol = _colIndexes.length;
+		final int tCol = target.getNumColumns();
+		final double[] c = target.getDenseBlockValues();
+		offT = offT * tCol;
 
-	@Override
-	public void decompressToBlock(MatrixBlock target, int colpos) {
-		int nrow = getNumRows();
-		for(int i = 0; i < nrow; i++) {
-			double cellVal = getData(i, colpos);
-			target.quickSetValue(i, 0, cellVal);
+		for(int i = rl; i < ru; i++, offT += tCol) {
+			final int rowIndex = _data.getIndex(i) * nCol;
+			for(int j = 0; j < nCol; j++)
+				c[offT + _colIndexes[j]] += values[rowIndex + j];
 		}
 	}
 
@@ -97,193 +104,309 @@ public abstract class ColGroupDDC extends ColGroupValue {
 			throw new RuntimeException("Column index " + c + " not in DDC group.");
 
 		// get value
-		return getData(r, ix);
+		int index = _data.getIndex(r);
+		if(index < getNumValues())
+			return _dict.getValue(index * _colIndexes.length + ix);
+		else
+			return 0.0;
+
 	}
 
 	@Override
 	public void countNonZerosPerRow(int[] rnnz, int rl, int ru) {
-		int ncol = getNumCols();
+		int ncol = _colIndexes.length;
+		final int numVals = getNumValues();
+		double[] values = _dict.getValues();
 		for(int i = rl; i < ru; i++) {
 			int lnnz = 0;
-			for(int colIx = 0; colIx < ncol; colIx++)
-				lnnz += (getData(i, colIx) != 0) ? 1 : 0;
+			int index = _data.getIndex(i);
+			if(index < numVals) {
+				for(int colIx = index; colIx < ncol + index; colIx++) {
+					lnnz += (values[colIx]) != 0 ? 1 : 0;
+				}
+			}
 			rnnz[i - rl] += lnnz;
 		}
 	}
 
-
-	protected void computeSum(MatrixBlock result, KahanFunction kplus) {
-		int nrow = getNumRows();
-		int ncol = getNumCols();
-		KahanObject kbuff = new KahanObject(result.quickGetValue(0, 0), result.quickGetValue(0, 1));
-
-		for(int i = 0; i < nrow; i++)
-			for(int j = 0; j < ncol; j++)
-				kplus.execute2(kbuff, getData(i, j));
-
-		result.quickSetValue(0, 0, kbuff._sum);
-		result.quickSetValue(0, 1, kbuff._correction);
+	@Override
+	protected void computeRowSums(double[] c, boolean square, int rl, int ru) {
+		double[] vals = _dict.sumAllRowsToDouble(square, _colIndexes.length);
+		for(int rix = rl; rix < ru; rix++)
+			c[rix] += vals[_data.getIndex(rix)];
 	}
 
-	protected void computeColSums(MatrixBlock result, KahanFunction kplus) {
-		int nrow = getNumRows();
-		int ncol = getNumCols();
-		KahanObject[] kbuff = new KahanObject[getNumCols()];
-		for(int j = 0; j < ncol; j++)
-			kbuff[j] = new KahanObject(result.quickGetValue(0, _colIndexes[j]),
-				result.quickGetValue(1, _colIndexes[j]));
-
-		for(int i = 0; i < nrow; i++)
-			for(int j = 0; j < ncol; j++)
-				kplus.execute2(kbuff[j], getData(i, j));
-
-		for(int j = 0; j < ncol; j++) {
-			result.quickSetValue(0, _colIndexes[j], kbuff[j]._sum);
-			result.quickSetValue(1, _colIndexes[j], kbuff[j]._correction);
-		}
-	}
-
-	protected void computeRowSums(MatrixBlock result, KahanFunction kplus, int rl, int ru) {
-		int ncol = getNumCols();
-		KahanObject kbuff = new KahanObject(0, 0);
-
-		for(int i = rl; i < ru; i++) {
-			kbuff.set(result.quickGetValue(i, 0), result.quickGetValue(i, 1));
-			for(int j = 0; j < ncol; j++)
-				kplus.execute2(kbuff, getData(i, j));
-			result.quickSetValue(i, 0, kbuff._sum);
-			result.quickSetValue(i, 1, kbuff._correction);
-		}
-	}
-
-	protected void computeRowMxx(MatrixBlock result, Builtin builtin, int rl, int ru) {
-		double[] c = result.getDenseBlockValues();
-		int ncol = getNumCols();
-
+	@Override
+	protected void computeRowMxx(double[] c, Builtin builtin, int rl, int ru) {
+		final int nCol = getNumCols();
+		double[] preAggregatedRows = _dict.aggregateTuples(builtin, nCol);
 		for(int i = rl; i < ru; i++)
-			for(int j = 0; j < ncol; j++)
-				c[i] = builtin.execute(c[i], getData(i, j));
+			c[i] = builtin.execute(c[i], preAggregatedRows[_data.getIndex(i)]);
 	}
 
-	protected final void postScaling(double[] vals, double[] c) {
-		final int ncol = getNumCols();
-		final int numVals = getNumValues();
+	@Override
+	public int[] getCounts(int[] counts) {
+		return getCounts(0, _numRows, counts);
+	}
 
-		for(int k = 0, valOff = 0; k < numVals; k++, valOff += ncol) {
-			double aval = vals[k];
-			for(int j = 0; j < ncol; j++) {
-				int colIx = _colIndexes[j];
-				c[colIx] += aval * _values[valOff + j];
+	@Override
+	public int[] getCounts(int rl, int ru, int[] counts) {
+		for(int i = rl; i < ru; i++) {
+			int index = _data.getIndex(i);
+			counts[index]++;
+		}
+		return counts;
+	}
+
+	@Override
+	public void preAggregate(final MatrixBlock m, final MatrixBlock preAgg, final int rl, final int ru) {
+		if(m.isInSparseFormat())
+			preAggregateSparse(m.getSparseBlock(), preAgg, rl, ru);
+		else
+			preAggregateDense(m, preAgg, rl, ru);
+	}
+
+	private void preAggregateDense(final MatrixBlock m, final MatrixBlock preAgg, final int rl, final int ru) {
+		preAggregateDense(m, preAgg, rl, ru, 0, _numRows);
+	}
+
+	public void preAggregateDense(MatrixBlock m, MatrixBlock preAgg, int rl, int ru, int cl, int cu) {
+		final double[] mV = m.getDenseBlockValues();
+		final double[] preAV = preAgg.getDenseBlockValues();
+		final int numVals = getNumValues();
+		if(_data instanceof MapToByte)
+			preAggregateDenseByte(mV, preAV, ((MapToByte) _data).getBytes(), rl, ru, cl, cu, _numRows, numVals);
+		else if(_data instanceof MapToChar)
+			preAggregateDenseChar(mV, preAV, ((MapToChar) _data).getChars(), rl, ru, cl, cu, _numRows, numVals);
+		else if(_data instanceof MapToInt)
+			preAggregateDenseInt(mV, preAV, ((MapToInt) _data).getInts(), rl, ru, cl, cu, _numRows, numVals);
+		else {
+			final int blockSize = 2000;
+			for(int block = cl; block < cu; block += blockSize) {
+				final int blockEnd = Math.min(block + blockSize, cu);
+				for(int rowLeft = rl, offOut = 0; rowLeft < ru; rowLeft++, offOut += numVals) {
+					final int offLeft = rowLeft * _numRows;
+					for(int rc = block; rc < blockEnd; rc++) {
+						final int idx = _data.getIndex(rc);
+						preAV[offOut + idx] += mV[offLeft + rc];
+					}
+				}
 			}
 		}
 	}
 
-	/**
-	 * Generic get value for byte-length-agnostic access to first column.
-	 * 
-	 * @param r global row index
-	 * @return value
-	 */
-	protected abstract double getData(int r);
+	private static void preAggregateDenseByte(final double[] mV, final double[] preAV, final byte[] d, final int rl,
+		final int ru, final int cl, final int cu, final int nRow, final int nVal) {
+		final int blockSize = 4000;
+		for(int block = cl; block < cu; block += blockSize) {
+			final int blockEnd = Math.min(block + blockSize, nRow);
+			for(int rowLeft = rl, offOut = 0; rowLeft < ru; rowLeft++, offOut += nVal) {
+				final int offLeft = rowLeft * nRow;
+				for(int rc = block; rc < blockEnd; rc++) {
+					final int idx = d[rc] & 0xFF;
+					preAV[offOut + idx] += mV[offLeft + rc];
+				}
+			}
+		}
+	}
 
-	/**
-	 * Generic get value for byte-length-agnostic access.
-	 * 
-	 * @param r     global row index
-	 * @param colIx local column index
-	 * @return value
-	 */
-	protected abstract double getData(int r, int colIx);
+	private static void preAggregateDenseChar(final double[] mV, final double[] preAV, final char[] d, final int rl,
+		final int ru, final int cl, final int cu, final int nRow, final int nVal) {
+		final int blockSize = 4000;
+		for(int block = cl; block < cu; block += blockSize) {
+			final int blockEnd = Math.min(block + blockSize, nRow);
+			for(int rowLeft = rl, offOut = 0; rowLeft < ru; rowLeft++, offOut += nVal) {
+				final int offLeft = rowLeft * nRow;
+				for(int rc = block; rc < blockEnd; rc++) {
+					final int idx = d[rc];
+					preAV[offOut + idx] += mV[offLeft + rc];
+				}
+			}
+		}
+	}
 
-	/**
-	 * Generic set value for byte-length-agnostic write of encoded value.
-	 * 
-	 * @param r    global row index
-	 * @param code encoded value
-	 */
-	protected abstract void setData(int r, int code);
+	private static void preAggregateDenseInt(final double[] mV, final double[] preAV, final int[] d, final int rl,
+		final int ru, final int cl, final int cu, final int nRow, final int nVal) {
+		final int blockSize = 2000;
+		for(int block = cl; block < cu; block += blockSize) {
+			final int blockEnd = Math.min(block + blockSize, nRow);
+			for(int rowLeft = rl, offOut = 0; rowLeft < ru; rowLeft++, offOut += nVal) {
+				final int offLeft = rowLeft * nRow;
+				for(int rc = block; rc < blockEnd; rc++) {
+					final int idx = d[rc];
+					preAV[offOut + idx] += mV[offLeft + rc];
+				}
+			}
+		}
+	}
 
-	protected abstract int getCode(int r);
+	private void preAggregateSparse(SparseBlock sb, MatrixBlock preAgg, int rl, int ru) {
+		final double[] preAV = preAgg.getDenseBlockValues();
+		final int numVals = getNumValues();
+		for(int rowLeft = rl, offOut = 0; rowLeft < ru; rowLeft++, offOut += numVals) {
+			if(sb.isEmpty(rowLeft))
+				continue;
+			final int apos = sb.pos(rowLeft);
+			final int alen = sb.size(rowLeft) + apos;
+			final int[] aix = sb.indexes(rowLeft);
+			final double[] avals = sb.values(rowLeft);
+			for(int j = apos; j < alen; j++) {
+				preAV[offOut + _data.getIndex(aix[j])] += avals[j];
+			}
+		}
+	}
+
+	@Override
+	public Dictionary preAggregateThatDDCStructure(ColGroupDDC that, Dictionary ret) {
+		final int nCol = that._colIndexes.length;
+		for(int r = 0; r < _numRows; r++)
+			that._dict.addToEntry(ret, that._data.getIndex(r), this._data.getIndex(r), nCol);
+
+		return ret;
+	}
+
+	@Override
+	public Dictionary preAggregateThatSDCStructure(ColGroupSDC that, Dictionary ret, boolean preModified) {
+		final AIterator itThat = that._indexes.getIterator();
+		final int offsetToDefault = that.getNumValues() - 1;
+		final int nCol = that._colIndexes.length;
+		if(preModified) {
+			while(itThat.hasNext()) {
+				final int to = _data.getIndex(itThat.value());
+				final int fr = that._data.getIndex(itThat.getDataIndexAndIncrement());
+				that._dict.addToEntry(ret, fr, to, nCol);
+			}
+		}
+		else {
+			int i = 0;
+
+			for(; i < _numRows && itThat.hasNext(); i++) {
+				int fr = (itThat.value() == i) ? that._data
+					.getIndex(itThat.getDataIndexAndIncrement()) : offsetToDefault;
+				that._dict.addToEntry(ret, fr, this._data.getIndex(i), nCol);
+			}
+
+			for(; i < _numRows; i++)
+				that._dict.addToEntry(ret, offsetToDefault, this._data.getIndex(i), nCol);
+		}
+
+		return ret;
+	}
+
+	@Override
+	public Dictionary preAggregateThatSDCZerosStructure(ColGroupSDCZeros that, Dictionary ret) {
+		final AIterator itThat = that._indexes.getIterator();
+		final int nCol = that._colIndexes.length;
+
+		while(itThat.hasNext()) {
+			final int to = _data.getIndex(itThat.value());
+			final int fr = that._data.getIndex(itThat.getDataIndexAndIncrement());
+			that._dict.addToEntry(ret, fr, to, nCol);
+		}
+
+		return ret;
+	}
+
+	@Override
+	public Dictionary preAggregateThatSDCSingleZerosStructure(ColGroupSDCSingleZeros that, Dictionary ret) {
+		final AIterator itThat = that._indexes.getIterator();
+		final int nCol = that._colIndexes.length;
+		while(itThat.hasNext()) {
+			final int to = _data.getIndex(itThat.value());
+			that._dict.addToEntry(ret, 0, to, nCol);
+			itThat.next();
+		}
+
+		return ret;
+	}
+
+	@Override
+	public Dictionary preAggregateThatSDCSingleStructure(ColGroupSDCSingle that, Dictionary ret, boolean preModified) {
+		final AIterator itThat = that._indexes.getIterator();
+		final int nCol = that._colIndexes.length;
+		if(preModified) {
+			while(itThat.hasNext()) {
+				final int to = _data.getIndex(itThat.value());
+				that._dict.addToEntry(ret, 0, to, nCol);
+				itThat.next();
+			}
+		}
+		else {
+			int i = 0;
+			for(; i < _numRows && itThat.hasNext(); i++) {
+				if(itThat.value() == i) {
+					that._dict.addToEntry(ret, 0, this._data.getIndex(i), nCol);
+					itThat.next();
+				}
+				else
+					that._dict.addToEntry(ret, 1, this._data.getIndex(i), nCol);
+			}
+
+			for(; i < _numRows; i++)
+				that._dict.addToEntry(ret, 1, this._data.getIndex(i), nCol);
+		}
+
+		return ret;
+	}
+
+	@Override
+	public boolean sameIndexStructure(ColGroupCompressed that) {
+		return that instanceof ColGroupDDC && ((ColGroupDDC) that)._data == _data;
+	}
+
+	@Override
+	public int getIndexStructureHash() {
+		return _data.hashCode();
+	}
+
+	@Override
+	public ColGroupType getColGroupType() {
+		return ColGroupType.DDC;
+	}
 
 	@Override
 	public long estimateInMemorySize() {
-		return ColGroupSizes.estimateInMemorySizeDDC(getNumCols(), getNumValues());
+		long size = super.estimateInMemorySize();
+		size += _data.getInMemorySize();
+		return size;
 	}
 
 	@Override
-	public Iterator<IJV> getIterator(int rl, int ru, boolean inclZeros, boolean rowMajor) {
-		// DDC iterator is always row major, so no need for custom handling
-		return new DDCIterator(rl, ru, inclZeros);
+	public AColGroup scalarOperation(ScalarOperator op) {
+		return new ColGroupDDC(_colIndexes, _numRows, applyScalarOp(op), _data, getCachedCounts());
 	}
 
 	@Override
-	public ColGroupRowIterator getRowIterator(int rl, int ru) {
-		return new DDCRowIterator(rl, ru);
+	public AColGroup binaryRowOp(BinaryOperator op, double[] v, boolean sparseSafe, boolean left) {
+		ADictionary aDict = applyBinaryRowOp(op, v, true, left);
+		return new ColGroupDDC(_colIndexes, _numRows, aDict, _data, getCachedCounts());
 	}
 
-	private class DDCIterator implements Iterator<IJV> {
-		// iterator configuration
-		private final int _ru;
-		private final boolean _inclZeros;
-
-		// iterator state
-		private final IJV _buff = new IJV();
-		private int _rpos = -1;
-		private int _cpos = -1;
-		private double _value = 0;
-
-		public DDCIterator(int rl, int ru, boolean inclZeros) {
-			_ru = ru;
-			_inclZeros = inclZeros;
-			_rpos = rl;
-			_cpos = -1;
-			getNextValue();
-		}
-
-		@Override
-		public boolean hasNext() {
-			return(_rpos < _ru);
-		}
-
-		@Override
-		public IJV next() {
-			_buff.set(_rpos, _colIndexes[_cpos], _value);
-			getNextValue();
-			return _buff;
-		}
-
-		private void getNextValue() {
-			do {
-				boolean nextRow = (_cpos + 1 >= getNumCols());
-				_rpos += nextRow ? 1 : 0;
-				_cpos = nextRow ? 0 : _cpos + 1;
-				if(_rpos >= _ru)
-					return; // reached end
-				_value = getData(_rpos, _cpos);
-			}
-			while(!_inclZeros && _value == 0);
-		}
+	@Override
+	public void write(DataOutput out) throws IOException {
+		super.write(out);
+		_data.write(out);
 	}
 
-	private class DDCRowIterator extends ColGroupRowIterator {
-		public DDCRowIterator(int rl, int ru) {
-			// do nothing
-		}
+	@Override
+	public void readFields(DataInput in) throws IOException {
+		super.readFields(in);
+		_data = MapToFactory.readIn(in);
+	}
 
-		@Override
-		public void next(double[] buff, int rowIx, int segIx, boolean last) {
-			// copy entire value tuple to output row
-			final int clen = getNumCols();
-			final int off = getCode(rowIx) * clen;
-			for(int j = 0; j < clen; j++)
-				buff[_colIndexes[j]] = _values[off + j];
-		}
+	@Override
+	public long getExactSizeOnDisk() {
+		long ret = super.getExactSizeOnDisk();
+		ret += _data.getExactSizeOnDisk();
+		return ret;
 	}
 
 	@Override
 	public String toString() {
 		StringBuilder sb = new StringBuilder();
 		sb.append(super.toString());
+		sb.append(String.format("\n%15s ", "Data: "));
+		sb.append(_data);
 		return sb.toString();
 	}
 

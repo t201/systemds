@@ -57,12 +57,12 @@ public class LineageMap {
 			return; // no need for lineage tracing
 		if (!(inst instanceof LineageTraceable))
 			throw new DMLRuntimeException("Unknown Instruction (" + inst.getOpcode() + ") traced.");
-		
-		if( ((LineageTraceable) inst).hasSingleLineage() ) {
-			trace(inst, ec, ((LineageTraceable) inst).getLineageItem(ec));
+		LineageTraceable linst = (LineageTraceable) inst;
+		if( linst.hasSingleLineage() ) {
+			trace(inst, ec, linst.getLineageItem(ec));
 		}
 		else {
-			Pair<String, LineageItem>[] items = ((LineageTraceable) inst).getLineageItems(ec);
+			Pair<String, LineageItem>[] items = linst.getLineageItems(ec);
 			if (items == null || items.length < 1)
 				trace(inst, ec, null);
 			else {
@@ -72,13 +72,20 @@ public class LineageMap {
 		}
 	}
 	
-	public void processDedupItem(LineageMap lm, Long path) {
+	public void processDedupItem(LineageMap lm, Long path, LineageItem[] liinputs, String name, Map<String, Integer> dpatchHashList) {
+		String delim = LineageDedupUtils.DEDUP_DELIM;
 		for (Map.Entry<String, LineageItem> entry : lm._traces.entrySet()) {
-			if (_traces.containsKey(entry.getKey())) {
-				addLineageItem(Pair.of(entry.getKey(),
-					new LineageItem(entry.getKey(), LineageItem.dedupItemOpcode,
-					new LineageItem[]{_traces.get(entry.getKey()), entry.getValue()})));
-			}
+			// Encode everything needed by the recomputation logic in the
+			// opcode to map this lineage item to the right patch.
+			String opcode = LineageItem.dedupItemOpcode + delim + entry.getKey()
+				+ delim + name + delim + path.toString();
+			// If reuse is enabled, set the hash of the dedup node as of the corresponding root.
+			// This way dedup nodes have the same hash as the matching non-dedup DAGs, which is 
+			// required for reuse.
+			// Note: 2 node may point to the same patch, but have different hashes
+			LineageItem li = dpatchHashList == null ? new LineageItem(opcode, entry.getValue(), liinputs)
+					: new LineageItem(opcode, entry.getValue(), dpatchHashList.get(entry.getKey()), liinputs);
+			addLineageItem(Pair.of(entry.getKey(), li));
 		}
 	}
 	
@@ -160,7 +167,8 @@ public class LineageMap {
 					break;
 				}
 				case Write: {
-					processWriteLI(vcp_inst.getInput1(), vcp_inst.getInput2(), ec);
+					if (!vcp_inst.getInput1().isLiteral())
+						processWriteLI(vcp_inst.getInput1(), vcp_inst.getInput2(), ec);
 					break;
 				}
 				case MoveVariable: {
@@ -222,7 +230,7 @@ public class LineageMap {
 			_traces.put(keyTo, input);
 	}
 	
-	private LineageItem removeLineageItem(String key) {
+	public LineageItem removeLineageItem(String key) {
 		//remove item if present
 		return _traces.remove(key);
 	}
@@ -237,8 +245,8 @@ public class LineageMap {
 		String fName = ec.getScalarInput(input2.getName(), Types.ValueType.STRING, input2.isLiteral()).getStringValue();
 		
 		if (DMLScript.LINEAGE_DEDUP) {
-			LineageItemUtils.writeTraceToHDFS(Explain.explain(li), fName + ".lineage.dedup");
-			li = LineageItemUtils.rDecompress(li);
+			// gracefully serialize the dedup maps without decompressing
+			LineageItemUtils.writeTraceToHDFS(LineageDedupUtils.mergeExplainDedupBlocks(ec), fName + ".lineage.dedup");
 		}
 		LineageItemUtils.writeTraceToHDFS(Explain.explain(li), fName + ".lineage");
 	}

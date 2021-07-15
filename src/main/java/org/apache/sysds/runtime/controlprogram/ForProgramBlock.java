@@ -35,7 +35,8 @@ import org.apache.sysds.runtime.instructions.cp.CPOperand;
 import org.apache.sysds.runtime.instructions.cp.IntObject;
 import org.apache.sysds.runtime.instructions.cp.ScalarObject;
 import org.apache.sysds.runtime.lineage.Lineage;
-import org.apache.sysds.runtime.lineage.LineagePath;
+import org.apache.sysds.runtime.lineage.LineageDedupUtils;
+import org.apache.sysds.runtime.util.UtilFunctions;
 
 public class ForProgramBlock extends ProgramBlock
 {
@@ -100,18 +101,16 @@ public class ForProgramBlock extends ProgramBlock
 	@Override
 	public void execute(ExecutionContext ec) {
 		// evaluate from, to, incr only once (assumption: known at for entry)
-		IntObject from = executePredicateInstructions( 1, _fromInstructions, ec );
-		IntObject to   = executePredicateInstructions( 2, _toInstructions, ec );
-		IntObject incr = (_incrementInstructions == null || _incrementInstructions.isEmpty()) ? 
+		ScalarObject from = executePredicateInstructions( 1, _fromInstructions, ec, false);
+		ScalarObject to   = executePredicateInstructions( 2, _toInstructions, ec, false);
+		ScalarObject incr = (_incrementInstructions == null || _incrementInstructions.isEmpty()) ? 
 			new IntObject((from.getLongValue()<=to.getLongValue()) ? 1 : -1) :
-			executePredicateInstructions( 3, _incrementInstructions, ec );
+			executePredicateInstructions( 3, _incrementInstructions, ec, false);
 		
-		if ( incr.getLongValue() == 0 ) //would produce infinite loop
-			throw new DMLRuntimeException(printBlockErrorLocation() +  "Expression for increment "
-				+ "of variable '" + _iterPredVar + "' must evaluate to a non-zero value.");
-		
-		int currentDedupBlock = 0;
-		LineagePath currentLineagePath = new LineagePath();
+		long numIterations = UtilFunctions.getSeqLength(
+			from.getDoubleValue(), to.getDoubleValue(), incr.getDoubleValue(), false);
+		if( numIterations <= 0 )
+			return;
 		
 		// execute for loop
 		try
@@ -119,20 +118,15 @@ public class ForProgramBlock extends ProgramBlock
 			// prepare update in-place variables
 			UpdateType[] flags = prepareUpdateInPlaceVariables(ec, _tid);
 			
-			// observe all distinct paths, compute a LineageDedupBlock and stores them globally
-			if (DMLScript.LINEAGE_DEDUP) {
-				ec.getLineage().computeDedupBlock(this, ec);
-				currentLineagePath = ec.getLineagePath();
-				ec.getLineagePath().initLastBranch();
-			}
+			// compute and store the number of distinct paths
+			if (DMLScript.LINEAGE_DEDUP)
+				ec.getLineage().initializeDedupBlock(this, ec);
 			
 			// run for loop body for each instance of predicate sequence 
 			SequenceIterator seqIter = new SequenceIterator(from, to, incr);
 			for (IntObject iterVar : seqIter) {
-				if (DMLScript.LINEAGE_DEDUP) {
-					ec.getLineagePath().clearLastBranch();
-					currentDedupBlock = 0;
-				}
+				if (DMLScript.LINEAGE_DEDUP)
+					ec.getLineage().resetDedupPath();
 				
 				//set iteration variable
 				ec.setVariable(_iterPredVar, iterVar);
@@ -140,25 +134,24 @@ public class ForProgramBlock extends ProgramBlock
 					Lineage li = ec.getLineage();
 					li.set(_iterPredVar, li.getOrCreate(new CPOperand(iterVar)));
 				}
+				if (DMLScript.LINEAGE_DEDUP)
+					// create a new dedup map, if needed, to trace this iteration
+					ec.getLineage().createDedupPatch(this, ec);
 				
 				//execute all child blocks
-				for (int i = 0; i < _childBlocks.size(); i++) {
+				for (int i = 0; i < _childBlocks.size(); i++)
 					_childBlocks.get(i).execute(ec);
-					
-					if (DMLScript.LINEAGE_DEDUP && (
-						// Current ProgramBlock is last or next ProgramBlock is ForProgramBlock
-						i + 1 == _childBlocks.size() || _childBlocks.get(i + 1) instanceof ForProgramBlock)) {
-						ec.getLineage().tracePath(currentDedupBlock++, ec.getLineagePath().getLastBranch());
-						ec.getLineagePath().clearLastBranch();
-					}
+				
+				if (DMLScript.LINEAGE_DEDUP) {
+					LineageDedupUtils.replaceLineage(ec);
+					// hook the dedup map to the main lineage trace
+					ec.getLineage().traceCurrentDedupPath(this, ec);
 				}
 			}
 			
-			// clear current LineageDedupBlock
-			if (DMLScript.LINEAGE_DEDUP) {
+			// clear the current LineageDedupBlock
+			if (DMLScript.LINEAGE_DEDUP)
 				ec.getLineage().clearDedupBlock();
-				ec.setLineagePath(currentLineagePath);
-			}
 			
 			// reset update-in-place variables
 			resetUpdateInPlaceVariableFlags(ec, flags);
@@ -175,10 +168,10 @@ public class ForProgramBlock extends ProgramBlock
 		executeExitInstructions(_exitInstruction, "for", ec);
 	}
 
-	protected IntObject executePredicateInstructions( int pos, ArrayList<Instruction> instructions, ExecutionContext ec )
+	protected ScalarObject executePredicateInstructions( int pos, ArrayList<Instruction> instructions, ExecutionContext ec, boolean downCast )
 	{
-		ScalarObject tmp = null;
-		IntObject ret = null;
+		ScalarObject ret = null;
+		ValueType vt = downCast ? ValueType.INT64 : null;
 		
 		try
 		{
@@ -199,10 +192,10 @@ public class ForProgramBlock extends ProgramBlock
 					predHops = fsb.getIncrementHops();
 					recompile = fsb.requiresIncrementRecompilation();
 				}
-				tmp = executePredicate(instructions, predHops, recompile, ValueType.INT64, ec);
+				ret = executePredicate(instructions, predHops, recompile, vt, ec);
 			}
 			else
-				tmp = executePredicate(instructions, null, false, ValueType.INT64, ec);
+				ret = executePredicate(instructions, null, false, vt, ec);
 		}
 		catch(Exception ex) {
 			String predNameStr = null;
@@ -214,10 +207,8 @@ public class ForProgramBlock extends ProgramBlock
 		}
 		
 		//final check of resulting int object (guaranteed to be non-null, see executePredicate)
-		if( tmp instanceof IntObject )
-			ret = (IntObject)tmp;
-		else //downcast to int if necessary
-			ret = new IntObject(tmp.getLongValue());
+		if(downCast && !(ret instanceof IntObject)) //downcast to int if necessary
+			ret = new IntObject(ret.getLongValue());
 		
 		return ret;
 	}
@@ -237,7 +228,7 @@ public class ForProgramBlock extends ProgramBlock
 		private long _incr = -1;
 		private boolean _inuse = false;
 		
-		protected SequenceIterator(IntObject from, IntObject to, IntObject incr) {
+		protected SequenceIterator(ScalarObject from, ScalarObject to, ScalarObject incr) {
 			_cur = from.getLongValue();
 			_to = to.getLongValue();
 			_incr = incr.getLongValue();

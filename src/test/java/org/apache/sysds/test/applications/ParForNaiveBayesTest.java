@@ -23,7 +23,7 @@ import java.util.HashMap;
 
 import org.junit.Test;
 import org.apache.sysds.common.Types.ExecMode;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.controlprogram.ParForProgramBlock.PExecMode;
 import org.apache.sysds.runtime.controlprogram.parfor.stat.InfrastructureAnalyzer;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
@@ -152,8 +152,8 @@ public class ParForNaiveBayesTest extends AutomatedTestBase
 			//compare output matrices
 			for( String out : new String[]{"class_prior", "class_conditionals" } )
 			{
-				HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS(out);				
-				HashMap<CellIndex, Double> rfile  = readRMatrixFromFS(out);
+				HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir(out);				
+				HashMap<CellIndex, Double> rfile  = readRMatrixFromExpectedDir(out);
 				TestUtils.compareMatrices(dmlfile, rfile, eps, "Stat-DML", "Stat-R");
 			}	
 		}

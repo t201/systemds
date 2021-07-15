@@ -19,10 +19,14 @@
 
 package org.apache.sysds.runtime.controlprogram.parfor.opt;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.FileFormat;
+import org.apache.sysds.common.Types.OpOpN;
+import org.apache.sysds.common.Types;
 import org.apache.sysds.conf.ConfigurationManager;
 import org.apache.sysds.hops.AggBinaryOp;
 import org.apache.sysds.hops.AggBinaryOp.MMultMethod;
@@ -40,7 +44,6 @@ import org.apache.sysds.hops.rewrite.HopRewriteUtils;
 import org.apache.sysds.hops.rewrite.ProgramRewriteStatus;
 import org.apache.sysds.hops.rewrite.ProgramRewriter;
 import org.apache.sysds.hops.rewrite.RewriteInjectSparkLoopCheckpointing;
-import org.apache.sysds.lops.LopProperties;
 import org.apache.sysds.parser.DMLProgram;
 import org.apache.sysds.parser.FunctionStatementBlock;
 import org.apache.sysds.parser.ParForStatement;
@@ -66,6 +69,7 @@ import org.apache.sysds.runtime.controlprogram.caching.MatrixObject;
 import org.apache.sysds.runtime.controlprogram.caching.MatrixObject.UpdateType;
 import org.apache.sysds.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysds.runtime.controlprogram.context.SparkExecutionContext;
+import org.apache.sysds.runtime.controlprogram.paramserv.ParamservUtils;
 import org.apache.sysds.runtime.controlprogram.parfor.ResultMergeLocalFile;
 import org.apache.sysds.runtime.controlprogram.parfor.opt.CostEstimator.ExcludeType;
 import org.apache.sysds.runtime.controlprogram.parfor.opt.CostEstimator.TestMeasure;
@@ -135,8 +139,9 @@ import java.util.stream.Collectors;
  * TODO blockwise partitioning
  *  
  */
-public class OptimizerRuleBased extends Optimizer
-{
+public class OptimizerRuleBased extends Optimizer {
+	private static final Log LOG = LogFactory.getLog(OptimizerRuleBased.class.getName());
+
 	public static final double PROB_SIZE_THRESHOLD_REMOTE = 100; //wrt # top-level iterations (min)
 	public static final double PROB_SIZE_THRESHOLD_PARTITIONING = 2; //wrt # top-level iterations (min)
 	public static final double PROB_SIZE_THRESHOLD_MB = 256*1024*1024; //wrt overall memory consumption (min)
@@ -234,7 +239,7 @@ public class OptimizerRuleBased extends Optimizer
 		
 		//determine memory consumption for what-if: all-cp or partitioned 
 		double M2 = pn.isCPOnly() ? M1 :
-			_cost.getEstimate(TestMeasure.MEMORY_USAGE, pn, LopProperties.ExecType.CP);
+			_cost.getEstimate(TestMeasure.MEMORY_USAGE, pn, Types.ExecType.CP);
 		LOG.debug(getOptMode()+" OPT: estimated new mem (serial exec, all CP) M="+toMB(M2) );
 		double M3 = _cost.getEstimate(TestMeasure.MEMORY_USAGE, pn, true);
 		LOG.debug(getOptMode()+" OPT: estimated new mem (cond partitioning) M="+toMB(M3) );
@@ -511,7 +516,7 @@ public class OptimizerRuleBased extends Optimizer
 			OptimizerUtils.DEFAULT_SIZE;
 	}
 
-	protected static LopProperties.ExecType getRIXExecType( MatrixObject mo, PDataPartitionFormat dpf, boolean withSparsity ) 
+	protected static Types.ExecType getRIXExecType( MatrixObject mo, PDataPartitionFormat dpf, boolean withSparsity ) 
 	{
 		double mem = -1;
 		
@@ -542,13 +547,13 @@ public class OptimizerRuleBased extends Optimizer
 		}
 		
 		if( mem < OptimizerUtils.getLocalMemBudget() )
-			return LopProperties.ExecType.CP;
+			return Types.ExecType.CP;
 		else
-			return LopProperties.ExecType.CP_FILE;
+			return Types.ExecType.CP_FILE;
 	}
 
 	public static boolean allowsBinaryCellPartitions( MatrixObject mo, PartitionFormat dpf ) {
-		return (getRIXExecType(mo, PDataPartitionFormat.COLUMN_BLOCK_WISE, false)==LopProperties.ExecType.CP );
+		return (getRIXExecType(mo, PDataPartitionFormat.COLUMN_BLOCK_WISE, false)==Types.ExecType.CP );
 	}
 	
 	///////
@@ -714,7 +719,7 @@ public class OptimizerRuleBased extends Optimizer
 		Hop h = OptTreeConverter.getAbstractPlanMapping().getMappedHop(n.getID());
 		
 		//set forced exec type
-		h.setForcedExecType(LopProperties.ExecType.CP);
+		h.setForcedExecType(Types.ExecType.CP);
 		n.setExecType(ExecType.CP);
 		
 		//recompile parent pb
@@ -858,10 +863,10 @@ public class OptimizerRuleBased extends Optimizer
 		if( n.isLeaf() && et == getRemoteExecType() )
 		{
 			Hop h = OptTreeConverter.getAbstractPlanMapping().getMappedHop( n.getID() );
-			if(    h.getForcedExecType()!=LopProperties.ExecType.SPARK 
+			if(    h.getForcedExecType()!=Types.ExecType.SPARK 
 				&& h.hasValidCPDimsAndSize() ) //integer dims
 			{
-				double mem = _cost.getLeafNodeEstimate(TestMeasure.MEMORY_USAGE, n, LopProperties.ExecType.CP);
+				double mem = _cost.getLeafNodeEstimate(TestMeasure.MEMORY_USAGE, n, Types.ExecType.CP);
 				if( mem <= memBudget )
 					ret = true;
 			}
@@ -891,7 +896,7 @@ public class OptimizerRuleBased extends Optimizer
 		ParForProgramBlock pfpb = (ParForProgramBlock) OptTreeConverter
 			.getAbstractPlanMapping().getMappedProg(pn.getID())[1];
 		HashSet<String> fnStack = new HashSet<>();
-		Recompiler.recompileProgramBlockHierarchy2Forced(pfpb.getChildBlocks(), 0, fnStack, LopProperties.ExecType.CP);
+		Recompiler.recompileProgramBlockHierarchy2Forced(pfpb.getChildBlocks(), 0, fnStack, Types.ExecType.CP);
 		
 		//debug output
 		LOG.debug(getOptMode()+" OPT: rewrite 'set operation exec type CP' - result="+count);
@@ -1100,8 +1105,8 @@ public class OptimizerRuleBased extends Optimizer
 
 		if (n.isLeaf() && et != getRemoteExecType()) {
 			Hop h = OptTreeConverter.getAbstractPlanMapping().getMappedHop(n.getID());
-			if ( h.getForcedExecType() != LopProperties.ExecType.SPARK) {
-				double mem = _cost.getLeafNodeEstimate(TestMeasure.MEMORY_USAGE, n, LopProperties.ExecType.CP);
+			if ( h.getForcedExecType() != Types.ExecType.SPARK) {
+				double mem = _cost.getLeafNodeEstimate(TestMeasure.MEMORY_USAGE, n, Types.ExecType.CP);
 				if (mem >= OptimizerUtils.DEFAULT_SIZE) {
 					// memory estimate for worst case scenario.
 					// optimistically ignoring this
@@ -1247,7 +1252,7 @@ public class OptimizerRuleBased extends Optimizer
 					long id = c.getID();
 					c.setK(tmpK);
 					ParForProgramBlock pfpb = (ParForProgramBlock) 
-						OptTreeConverter.getAbstractPlanMapping().getMappedProg(id)[1];
+						OptTreeConverter.getAbstractPlanMapping().getMappedProgramBlock(id);
 					pfpb.setDegreeOfParallelism(tmpK);
 					
 					//distribute remaining parallelism
@@ -1275,6 +1280,13 @@ public class OptimizerRuleBased extends Optimizer
 						mhop.setMaxNumThreads(1); //set max constraint in hop
 						c.setK(1); //set optnode k (for explain)
 					}
+					
+					//if parfor contains eval call, make unoptimized functions single-threaded
+					if( HopRewriteUtils.isNary(h, OpOpN.EVAL) ) {
+						ProgramBlock pb = OptTreeConverter.getAbstractPlanMapping().getMappedProgramBlock(n.getID());
+						pb.getProgram().getFunctionProgramBlocks(false)
+							.forEach((fname, fvalue) -> ParamservUtils.recompileProgramBlocks(1, fvalue.getChildBlocks()));
+					}
 				}
 				else
 					rAssignRemainingParallelism(c, parforK, opsK);
@@ -1284,7 +1296,7 @@ public class OptimizerRuleBased extends Optimizer
 			if( recompileSB ) {
 				try {
 					//guaranteed to be a last-level block (see hop change)
-					ProgramBlock pb = (ProgramBlock) OptTreeConverter.getAbstractPlanMapping().getMappedProg(n.getID())[1];
+					ProgramBlock pb = OptTreeConverter.getAbstractPlanMapping().getMappedProgramBlock(n.getID());
 					Recompiler.recompileProgramBlockInstructions(pb);
 				}
 				catch(Exception ex){
@@ -1356,7 +1368,7 @@ public class OptimizerRuleBased extends Optimizer
 		
 		// modify rtprog
 		ParForProgramBlock pfpb = (ParForProgramBlock) OptTreeConverter
-                                     .getAbstractPlanMapping().getMappedProg(id)[1];
+			.getAbstractPlanMapping().getMappedProgramBlock(id);
 		pfpb.setTaskPartitioner(partitioner);
 		
 		// modify plan
@@ -2403,10 +2415,9 @@ public class OptimizerRuleBased extends Optimizer
 	{
 		boolean ret = false;
 		
-		if( n.getNodeType() == NodeType.PARFOR )
-		{
-			ParForProgramBlock pfpb = (ParForProgramBlock) OptTreeConverter
-		    						.getAbstractPlanMapping().getMappedProg(n.getID())[1];	
+		if( n.getNodeType() == NodeType.PARFOR ) {
+			ProgramBlock pfpb = OptTreeConverter
+				.getAbstractPlanMapping().getMappedProgramBlock(n.getID());
 			ret = (parfor == pfpb);
 		}
 		
@@ -2425,7 +2436,7 @@ public class OptimizerRuleBased extends Optimizer
 		if( n.getNodeType()==NodeType.PARFOR )
 		{
 			ParForProgramBlock pfpb = (ParForProgramBlock) OptTreeConverter
-									.getAbstractPlanMapping().getMappedProg(n.getID())[1];
+				.getAbstractPlanMapping().getMappedProgramBlock(n.getID());
 			pbs.add(pfpb);
 		}
 		

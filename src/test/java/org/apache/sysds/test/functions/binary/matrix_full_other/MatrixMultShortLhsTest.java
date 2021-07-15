@@ -22,7 +22,7 @@ package org.apache.sysds.test.functions.binary.matrix_full_other;
 import java.util.HashMap;
 
 import org.junit.Test;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
@@ -36,9 +36,9 @@ public class MatrixMultShortLhsTest extends AutomatedTestBase
 	private final static double eps = 1e-10;
 	
 	private final static int rowsA = 10;
-	private final static int colsA = 2023;
-	private final static int rowsB = 2023;
-	private final static int colsB = 1997;
+	private final static int colsA = 1523;
+	private final static int rowsB = 1523;
+	private final static int colsB = 1397;
 	
 	private final static double sparsity1 = 0.9;
 	private final static double sparsity2 = 0.1;
@@ -91,12 +91,13 @@ public class MatrixMultShortLhsTest extends AutomatedTestBase
 		writeInputMatrixWithMTD("B", B, true);
 
 		//run tests
+		
 		runTest(true, false, null, -1); 
 		runRScript(true); 
 		
 		//compare matrices 
-		HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("C");
-		HashMap<CellIndex, Double> rfile  = readRMatrixFromFS("C");
+		HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("C");
+		HashMap<CellIndex, Double> rfile  = readRMatrixFromExpectedDir("C");
 		TestUtils.compareMatrices(dmlfile, rfile, eps, "Stat-DML", "Stat-R");
 	}
 }

@@ -23,7 +23,7 @@ import java.util.HashMap;
 import org.junit.Test;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
@@ -38,60 +38,48 @@ public class ReluBackwardTest extends AutomatedTestBase
 	
 	@Override
 	public void setUp() {
-		addTestConfiguration(TEST_NAME, new TestConfiguration(TEST_CLASS_DIR, TEST_NAME, 
-				new String[] {"B"}));
+		addTestConfiguration(TEST_NAME, new TestConfiguration(TEST_CLASS_DIR, TEST_NAME, new String[] {"B"}));
 	}
 	
 	@Test
-	public void testReluBackwardDense1() 
-	{
+	public void testReluBackwardDense1()  {
 		runReluBackwardTest(ExecType.CP, 10, 100);
 	}
 	
 	@Test
-	public void testReluBackwardDense2() 
-	{
+	public void testReluBackwardDense2() {
 		runReluBackwardTest(ExecType.CP, 100, 10);
 	}
 	
 	@Test
-	public void testReluBackwardDense3() 
-	{
+	public void testReluBackwardDense3() {
 		runReluBackwardTest(ExecType.CP, 100, 100);
 	}
 	
-	/**
-	 * 
-	 * @param et
-	 * @param sparse
-	 */
 	public void runReluBackwardTest( ExecType et, int M, int N) 
 	{
 		ExecMode oldRTP = rtplatform;
-			
+		
 		boolean sparkConfigOld = DMLScript.USE_LOCAL_SPARK_CONFIG;
 		
 		try
 		{
-		    TestConfiguration config = getTestConfiguration(TEST_NAME);
-		    if(et == ExecType.SPARK) {
-		    	rtplatform = ExecMode.SPARK;
-		    }
-		    else {
-		    	rtplatform = ExecMode.SINGLE_NODE;
-		    }
+			TestConfiguration config = getTestConfiguration(TEST_NAME);
+			if(et == ExecType.SPARK) {
+				rtplatform = ExecMode.SPARK;
+			}
+			else {
+				rtplatform = ExecMode.SINGLE_NODE;
+			}
 			if( rtplatform == ExecMode.SPARK )
 				DMLScript.USE_LOCAL_SPARK_CONFIG = true;
 			
 			loadTestConfiguration(config);
-	        
-			/* This is for running the junit test the new way, i.e., construct the arguments directly */
+			
 			String RI_HOME = SCRIPT_DIR + TEST_DIR;
 			fullDMLScriptName = RI_HOME + TEST_NAME + ".dml";
+			programArgs = new String[]{"-args",  "" + M, "" + N, output("B")};
 			
-			programArgs = new String[]{"-explain", "-args",  "" + M, "" + N, 
-					output("B")};
-			        
 			boolean exceptionExpected = false;
 			int expectedNumberOfJobs = -1;
 			runTest(true, exceptionExpected, null, expectedNumberOfJobs);
@@ -101,17 +89,15 @@ public class ReluBackwardTest extends AutomatedTestBase
 			
 			// Run comparison R script
 			runRScript(true);
-			HashMap<CellIndex, Double> bHM = readRMatrixFromFS("B");
+			HashMap<CellIndex, Double> bHM = readRMatrixFromExpectedDir("B");
 			
-			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("B");
+			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("B");
 			TestUtils.compareMatrices(dmlfile, bHM, epsilon, "B-DML", "NumPy");
 			
 		}
-		finally
-		{
+		finally {
 			rtplatform = oldRTP;
 			DMLScript.USE_LOCAL_SPARK_CONFIG = sparkConfigOld;
 		}
 	}
-
 }

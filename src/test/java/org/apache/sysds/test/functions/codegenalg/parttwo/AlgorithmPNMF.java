@@ -27,7 +27,7 @@ import org.junit.Test;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
 import org.apache.sysds.hops.OptimizerUtils;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
@@ -141,10 +141,10 @@ public class AlgorithmPNMF extends AutomatedTestBase
 			runRScript(true); 
 			
 			//compare matrices 
-			HashMap<CellIndex, Double> dmlW = readDMLMatrixFromHDFS("W");
-			HashMap<CellIndex, Double> dmlH = readDMLMatrixFromHDFS("H");
-			HashMap<CellIndex, Double> rW = readRMatrixFromFS("W");
-			HashMap<CellIndex, Double> rH = readRMatrixFromFS("H");
+			HashMap<CellIndex, Double> dmlW = readDMLMatrixFromOutputDir("W");
+			HashMap<CellIndex, Double> dmlH = readDMLMatrixFromOutputDir("H");
+			HashMap<CellIndex, Double> rW = readRMatrixFromExpectedDir("W");
+			HashMap<CellIndex, Double> rH = readRMatrixFromExpectedDir("H");
 			TestUtils.compareMatrices(dmlW, rW, eps, "Stat-DML", "Stat-R");
 			TestUtils.compareMatrices(dmlH, rH, eps, "Stat-DML", "Stat-R");
 			Assert.assertTrue(heavyHittersContainsSubString("spoof") || heavyHittersContainsSubString("sp_spoof"));

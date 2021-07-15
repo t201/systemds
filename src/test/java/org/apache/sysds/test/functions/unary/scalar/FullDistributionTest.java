@@ -25,7 +25,7 @@ import java.util.Random;
 import org.junit.Test;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
@@ -197,8 +197,8 @@ public class FullDistributionTest extends AutomatedTestBase
 			runRScript(true); 
 			
 			//compare results
-			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("dfout");
-			HashMap<CellIndex, Double> rfile  = readRMatrixFromFS("dfout");
+			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("dfout");
+			HashMap<CellIndex, Double> rfile  = readRMatrixFromExpectedDir("dfout");
 			TestUtils.compareMatrices(dmlfile, rfile, 1e-8, "DMLout", "Rout");
 		}
 		finally {

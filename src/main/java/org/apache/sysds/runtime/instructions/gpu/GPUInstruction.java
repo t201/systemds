@@ -19,17 +19,28 @@
 
 package org.apache.sysds.runtime.instructions.gpu;
 
+import org.apache.commons.lang3.tuple.Pair;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.runtime.controlprogram.caching.MatrixObject;
 import org.apache.sysds.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysds.runtime.instructions.GPUInstructionParser;
 import org.apache.sysds.runtime.instructions.Instruction;
 import org.apache.sysds.runtime.instructions.cp.CPInstruction;
+import org.apache.sysds.runtime.instructions.cp.CPOperand;
 import org.apache.sysds.runtime.instructions.gpu.context.GPUContext;
+import org.apache.sysds.runtime.lineage.LineageItem;
+import org.apache.sysds.runtime.lineage.LineageItemUtils;
+import org.apache.sysds.runtime.lineage.LineageTraceable;
 import org.apache.sysds.runtime.matrix.operators.Operator;
 import org.apache.sysds.utils.Statistics;
 
-public abstract class GPUInstruction extends Instruction {
+public abstract class GPUInstruction extends Instruction implements LineageTraceable {
+	private static final Log LOG = LogFactory.getLog(GPUInstruction.class.getName());
+	public final CPOperand _output;
+	public final CPOperand _input1, _input2;
+
 	public enum GPUINSTRUCTION_TYPE {
 		AggregateUnary,
 		AggregateBinary,
@@ -43,7 +54,8 @@ public abstract class GPUInstruction extends Instruction {
 		BuiltinUnary,
 		BuiltinBinary,
 		Builtin,
-		MatrixIndexing
+		MatrixIndexing,
+		SpoofFused
 	}
 
 	// Memory/conversions
@@ -144,23 +156,31 @@ public abstract class GPUInstruction extends Instruction {
 	public final static String MISC_TIMER_CUMULATIVE_SUMPROD_KERNEL =  	   "cumSumProdk"; // time spent in cumulative sum-product cuda kernel
 
 	protected GPUINSTRUCTION_TYPE _gputype;
-	protected Operator _optr;
 
 	protected boolean _requiresLabelUpdate = false;
 
-	private GPUInstruction(String opcode, String istr) {
+	protected GPUInstruction(Operator op, CPOperand in1, CPOperand in2, CPOperand out, String opcode, String istr) {
+		super(op);
+		_input1 = in1;
+		_input2 = in2;
+		_output = out;
 		instString = istr;
 
 		// prepare opcode and update requirement for repeated usage
 		instOpcode = opcode;
 		_requiresLabelUpdate = super.requiresLabelUpdate();
 	}
-
-	protected GPUInstruction(Operator op, String opcode, String istr) {
-		this(opcode, istr);
-		_optr = op;
-	}
 	
+	protected GPUInstruction(Operator op, String opcode, String istr) {
+		super(op);
+		_input1 = null;
+		_input2 = null;
+		_output = null;
+		instString = istr;
+		instOpcode = opcode;
+		_requiresLabelUpdate = super.requiresLabelUpdate();
+	}
+
 	@Override
 	public IType getType() {
 		return IType.GPU;
@@ -206,6 +226,9 @@ public abstract class GPUInstruction extends Instruction {
 				if(gpuCtx != null)
 					gpuCtx.printMemoryInfo(getOpcode());
 		}
+		
+		//default post-process behavior
+		super.postprocessInstruction(ec);
 	}
 
 	/**
@@ -230,5 +253,11 @@ public abstract class GPUInstruction extends Instruction {
 	 */
 	protected MatrixObject getDenseMatrixOutputForGPUInstruction(ExecutionContext ec, String name, long numRows, long numCols) {
 		return ec.getDenseMatrixOutputForGPUInstruction(name, numRows, numCols).getKey();
+	}
+
+	@Override
+	public Pair<String, LineageItem> getLineageItem(ExecutionContext ec) {
+		return Pair.of(_output.getName(), new LineageItem(getOpcode(),
+			LineageItemUtils.getLineage(ec, _input1, _input2)));
 	}
 }

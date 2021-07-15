@@ -19,6 +19,17 @@
 
 package org.apache.sysds.runtime.util;
 
+import java.io.IOException;
+import java.text.DecimalFormat;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.BitSet;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map.Entry;
+import java.util.StringTokenizer;
+
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.math3.linear.Array2DRowRealMatrix;
 import org.apache.commons.math3.linear.BlockRealMatrix;
@@ -27,12 +38,16 @@ import org.apache.sysds.common.Types;
 import org.apache.sysds.common.Types.FileFormat;
 import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.runtime.DMLRuntimeException;
+import org.apache.sysds.runtime.compress.CompressedMatrixBlock;
+import org.apache.sysds.runtime.controlprogram.caching.FrameObject;
+import org.apache.sysds.runtime.controlprogram.caching.MatrixObject;
+import org.apache.sysds.runtime.controlprogram.caching.TensorObject;
 import org.apache.sysds.runtime.controlprogram.context.ExecutionContext;
+import org.apache.sysds.runtime.data.BasicTensorBlock;
+import org.apache.sysds.runtime.data.DataTensorBlock;
 import org.apache.sysds.runtime.data.DenseBlock;
 import org.apache.sysds.runtime.data.DenseBlockFactory;
-import org.apache.sysds.runtime.data.DataTensorBlock;
 import org.apache.sysds.runtime.data.SparseBlock;
-import org.apache.sysds.runtime.data.BasicTensorBlock;
 import org.apache.sysds.runtime.data.TensorBlock;
 import org.apache.sysds.runtime.instructions.cp.BooleanObject;
 import org.apache.sysds.runtime.instructions.cp.CPOperand;
@@ -56,17 +71,6 @@ import org.apache.sysds.runtime.matrix.data.MatrixBlock;
 import org.apache.sysds.runtime.matrix.data.MatrixIndexes;
 import org.apache.sysds.runtime.meta.DataCharacteristics;
 
-import java.io.IOException;
-import java.text.DecimalFormat;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.BitSet;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map.Entry;
-import java.util.StringTokenizer;
-
 
 /**
  * This class provides methods to read and write matrix blocks from to HDFS using different data formats.
@@ -74,8 +78,8 @@ import java.util.StringTokenizer;
  * (before executing MR jobs).
  * 
  */
-public class DataConverter 
-{
+public class DataConverter {
+	// private static final Log LOG = LogFactory.getLog(DataConverter.class.getName());
 	private static final String DELIM = " ";
 	
 	//////////////
@@ -255,7 +259,9 @@ public class DataConverter
 		int rows = mb.getNumRows();
 		int cols = mb.getNumColumns();
 		double[][] ret = new double[rows][cols]; //0-initialized
-		
+		if(mb instanceof CompressedMatrixBlock){
+			mb = ((CompressedMatrixBlock)mb).decompress();
+		}
 		if( mb.getNonZeros() > 0 ) {
 			if( mb.isInSparseFormat() ) {
 				Iterator<IJV> iter = mb.getSparseBlockIterator();
@@ -457,6 +463,26 @@ public class DataConverter
 	}
 
 	/**
+	 * Converts an Integer matrix to an MatrixBlock
+	 * 
+	 * @param data Int matrix input that is converted to double MatrixBlock
+	 * @return The matrixBlock constructed.
+	 */
+	public static MatrixBlock convertToMatrixBlock(int[][] data){
+		int rows = data.length;
+		int cols = (rows > 0)? data[0].length : 0;
+		MatrixBlock res = new MatrixBlock(rows, cols, false);
+		for(int row = 0; row< data.length; row++){
+			for(int col = 0; col < cols; col++){
+				double v = data[row][col];
+				if( v != 0 )
+					res.appendValue(row, col, v);
+			}
+		}
+		return res;
+	}
+
+	/**
 	 * Creates a dense Matrix Block and copies the given double vector into it.
 	 * 
 	 * @param data double array
@@ -580,25 +606,43 @@ public class DataConverter
 			// special case double schema (without cell-object creation, 
 			// cache-friendly row-column copy)
 			double[][] a = new double[n][];
-			double[] c = mb.getDenseBlockValues();
 			for( int j=0; j<n; j++ )
 				a[j] = (double[])frame.getColumnData(j);
-			int blocksizeIJ = 16; //blocks of a+overhead/c in L1 cache
-			for( int bi=0; bi<m; bi+=blocksizeIJ )
-				for( int bj=0; bj<n; bj+=blocksizeIJ ) {
-					int bimin = Math.min(bi+blocksizeIJ, m);
-					int bjmin = Math.min(bj+blocksizeIJ, n);
-					for( int i=bi, aix=bi*n; i<bimin; i++, aix+=n )
-						for( int j=bj; j<bjmin; j++ )
-							c[aix+j] = a[j][i];
-				}
+			int blocksizeIJ = 32; //blocks of a+overhead/c in L1 cache
+			long lnnz = 0;
+			if( mb.getDenseBlock().isContiguous() ) {
+				double[] c = mb.getDenseBlockValues();
+				for( int bi=0; bi<m; bi+=blocksizeIJ )
+					for( int bj=0; bj<n; bj+=blocksizeIJ ) {
+						int bimin = Math.min(bi+blocksizeIJ, m);
+						int bjmin = Math.min(bj+blocksizeIJ, n);
+						for( int i=bi, aix=bi*n; i<bimin; i++, aix+=n )
+							for( int j=bj; j<bjmin; j++ )
+								lnnz += (c[aix+j] = a[j][i]) != 0 ? 1 : 0;
+					}
+			}
+			else {
+				DenseBlock c = mb.getDenseBlock();
+				for( int bi=0; bi<m; bi+=blocksizeIJ )
+					for( int bj=0; bj<n; bj+=blocksizeIJ ) {
+						int bimin = Math.min(bi+blocksizeIJ, m);
+						int bjmin = Math.min(bj+blocksizeIJ, n);
+						for( int i=bi; i<bimin; i++ ) {
+							double[] cvals = c.values(i);
+							int cpos = c.pos(i);
+							for( int j=bj; j<bjmin; j++ )
+								lnnz += (cvals[cpos+j] = a[j][i]) != 0 ? 1 : 0;
+						}
+					}
+			}
+			mb.setNonZeros(lnnz);
 		}
 		else { 
 			//general case
 			for( int i=0; i<frame.getNumRows(); i++ ) 
 				for( int j=0; j<frame.getNumColumns(); j++ ) {
 					mb.appendValue(i, j, UtilFunctions.objectToDouble(
-							schema[j], frame.get(i, j)));
+						schema[j], frame.get(i, j)));
 				}
 		}
 		
@@ -703,7 +747,7 @@ public class DataConverter
 					double[] aval = sblock.values(i);
 					for( int j=apos; j<apos+alen; j++ ) {
 						row[aix[j]] = UtilFunctions.doubleToObject(
-								schema[aix[j]], aval[j]);
+							schema[aix[j]], aval[j]);
 					}
 				}
 				frame.appendRow(row);
@@ -725,18 +769,35 @@ public class DataConverter
 				// col pre-allocation, and cache-friendly row-column copy)
 				int m = mb.getNumRows();
 				int n = mb.getNumColumns();
-				double[] a = mb.getDenseBlockValues();
 				double[][] c = new double[n][m];
-				int blocksizeIJ = 16; //blocks of a/c+overhead in L1 cache
-				if( !mb.isEmptyBlock(false) )
-					for( int bi=0; bi<m; bi+=blocksizeIJ )
-						for( int bj=0; bj<n; bj+=blocksizeIJ ) {
-							int bimin = Math.min(bi+blocksizeIJ, m);
-							int bjmin = Math.min(bj+blocksizeIJ, n);
-							for( int i=bi, aix=bi*n; i<bimin; i++, aix+=n )
-								for( int j=bj; j<bjmin; j++ )
-									c[j][i] = a[aix+j];
-						}
+				int blocksizeIJ = 32; //blocks of a/c+overhead in L1 cache
+				if( !mb.isEmptyBlock(false) ) {
+					if( mb.getDenseBlock().isContiguous() ) {
+						double[] a = mb.getDenseBlockValues();
+						for( int bi=0; bi<m; bi+=blocksizeIJ )
+							for( int bj=0; bj<n; bj+=blocksizeIJ ) {
+								int bimin = Math.min(bi+blocksizeIJ, m);
+								int bjmin = Math.min(bj+blocksizeIJ, n);
+								for( int i=bi, aix=bi*n; i<bimin; i++, aix+=n )
+									for( int j=bj; j<bjmin; j++ )
+										c[j][i] = a[aix+j];
+							}
+					}
+					else { // large dense blocks
+						DenseBlock a = mb.getDenseBlock();
+						for( int bi=0; bi<m; bi+=blocksizeIJ )
+							for( int bj=0; bj<n; bj+=blocksizeIJ ) {
+								int bimin = Math.min(bi+blocksizeIJ, m);
+								int bjmin = Math.min(bj+blocksizeIJ, n);
+								for( int i=bi; i<bimin; i++ ) {
+									double[] avals = a.values(i);
+									int apos = a.pos(i);
+									for( int j=bj; j<bjmin; j++ )
+										c[j][i] = avals[apos+j];
+								}
+							}
+					}
+				}
 				frame.reset();
 				frame.appendColumns(c);
 			}
@@ -744,8 +805,8 @@ public class DataConverter
 				// general case
 				for( int i=0; i<mb.getNumRows(); i++ ) {
 					for( int j=0; j<mb.getNumColumns(); j++ ) {
-							row[j] = UtilFunctions.doubleToObject(
-									schema[j], mb.quickGetValue(i, j));
+						row[j] = UtilFunctions.doubleToObject(
+							schema[j], mb.quickGetValue(i, j));
 					}
 					frame.appendRow(row);
 				}
@@ -1114,6 +1175,7 @@ public class DataConverter
 					value = 0.0;
 				sb.append(dfFormat(df, value));
 				break;
+			case UINT8:
 			case INT32:
 			case INT64:
 				sb.append(tb.get(ix));
@@ -1194,6 +1256,47 @@ public class DataConverter
 			sb.append(lineseparator);
 		}
 		
+		return sb.toString();
+	}
+
+	public static String toString(ListObject list,int rows, int cols, boolean sparse, String separator, String lineSeparator, int rowsToPrint, int colsToPrint, int decimal)
+	{
+		StringBuilder sb = new StringBuilder();
+		sb.append("List containing:\n");
+		sb.append("[");
+		for(Data x : list.getData()){
+			if( x instanceof MatrixObject) {
+				sb.append("\nMatrix:\n");
+				MatrixObject dat = (MatrixObject) x;
+				MatrixBlock matrix = (MatrixBlock) dat.acquireRead();
+				sb.append(DataConverter.toString(matrix, sparse, separator, lineSeparator, rows, cols, decimal));
+				dat.release();
+			}
+			else if( x instanceof TensorObject ) {
+				sb.append("\n");
+				TensorObject dat = (TensorObject) x;
+				TensorBlock tensor = (TensorBlock) dat.acquireRead();
+				sb.append(DataConverter.toString(tensor, sparse, separator,
+					lineSeparator, "[", "]", rows, cols, decimal));
+				dat.release();
+			}
+			else if( x instanceof FrameObject ) {
+				sb.append("\n");
+				FrameObject dat = (FrameObject) x;
+				FrameBlock frame = (FrameBlock) dat.acquireRead();
+				sb.append(DataConverter.toString(frame, sparse, separator, lineSeparator, rows, cols, decimal));
+				dat.release();
+			}
+			else if (x instanceof ListObject){
+				ListObject dat = (ListObject) x;
+				sb.append(DataConverter.toString(dat, cols, rows,sparse, separator, lineSeparator, rows, cols, decimal));
+			}else{
+				sb.append(x.toString());
+			}
+			sb.append(", ");
+		}
+		sb.delete(sb.length() -2, sb.length());
+		sb.append("]");
 		return sb.toString();
 	}
 
@@ -1285,7 +1388,7 @@ public class DataConverter
 			ret[i] = data[i];
 		return ret;
 	}
-	
+
 	public static double[] toDouble(BitSet data, int len) {
 		double[] ret = new double[len];
 		for(int i=0; i<len; i++)

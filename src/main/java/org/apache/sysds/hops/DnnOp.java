@@ -19,6 +19,10 @@
 
 package org.apache.sysds.hops;
 
+import java.util.ArrayList;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.OpOp2;
@@ -27,17 +31,16 @@ import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.hops.rewrite.HopRewriteUtils;
 import org.apache.sysds.lops.DnnTransform;
 import org.apache.sysds.lops.Lop;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.runtime.instructions.gpu.context.GPUContextPool;
 import org.apache.sysds.runtime.matrix.data.DnnParameters;
 import org.apache.sysds.runtime.meta.DataCharacteristics;
 import org.apache.sysds.runtime.meta.MatrixCharacteristics;
 
-import java.util.ArrayList;
+public class DnnOp extends MultiThreadedHop {
+	private static final Log LOG =  LogFactory.getLog(DnnOp.class.getName());
 
-public class DnnOp extends MultiThreadedHop
-{
 	// -------------------------------------------------------------------------
 	// This flag allows us to compile plans with less unknowns and also serves as future tensorblock integration.
 	// By default, these flags are turned on.
@@ -152,7 +155,7 @@ public class DnnOp extends MultiThreadedHop
 		
 		//add reblock/checkpoint lops if necessary
 		constructAndSetLopsDataFlowProperties();
-		
+
 		return getLops();
 	}
 	

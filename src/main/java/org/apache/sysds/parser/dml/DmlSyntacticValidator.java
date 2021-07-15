@@ -56,6 +56,7 @@ import org.apache.sysds.parser.Expression;
 import org.apache.sysds.parser.ExpressionList;
 import org.apache.sysds.parser.ForStatement;
 import org.apache.sysds.parser.FunctionCallIdentifier;
+import org.apache.sysds.parser.FunctionDictionary;
 import org.apache.sysds.parser.FunctionStatement;
 import org.apache.sysds.parser.FunctionStatementBlock;
 import org.apache.sysds.parser.IfStatement;
@@ -133,7 +134,6 @@ import org.apache.sysds.parser.dml.DmlParser.WhileStatementContext;
 import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.runtime.util.UtilFunctions;
 
-
 public class DmlSyntacticValidator implements DmlListener {
 
 	private static final String DEF_WORK_DIR = ".";
@@ -157,7 +157,9 @@ public class DmlSyntacticValidator implements DmlListener {
 	// Names of new internal and external functions defined in this script (i.e., currentFile)
 	protected Set<String> functions;
 	// DML-bodied builtin functions
-	protected DMLProgram builtinFuns;
+	protected FunctionDictionary<FunctionStatementBlock> builtinFuns;
+	// DML-bodied namespace functions (loaded via builtins)
+	protected HashMap<String, FunctionDictionary<FunctionStatementBlock>> builtinFunsNs;
 	
 	public DmlSyntacticValidator(CustomErrorListener errorListener, Map<String,String> argVals, String sourceNamespace, Set<String> prepFunctions) {
 		this.errorListener = errorListener;
@@ -166,7 +168,8 @@ public class DmlSyntacticValidator implements DmlListener {
 		this.sourceNamespace = sourceNamespace;
 		sources = new HashMap<>();
 		functions = (null != prepFunctions) ? prepFunctions : new HashSet<>();
-		builtinFuns = new DMLProgram();
+		builtinFuns = new FunctionDictionary<>();
+		builtinFunsNs = new HashMap<>();
 	}
 
 
@@ -185,6 +188,14 @@ public class DmlSyntacticValidator implements DmlListener {
 	}
 	public String falseStringLiteral() { 
 		return "FALSE"; 
+	}
+	
+	public FunctionDictionary<FunctionStatementBlock> getParsedBuiltinFunctions() {
+		return builtinFuns;
+	}
+	
+	public Map<String, FunctionDictionary<FunctionStatementBlock>> getParsedBuiltinFunctionsNs() {
+		return builtinFunsNs;
 	}
 	
 	protected ArrayList<ParameterExpression> getParameterExpressionList(List<ParameterizedExpressionContext> paramExprs) {
@@ -447,8 +458,8 @@ public class DmlSyntacticValidator implements DmlListener {
 	public void exitImportStatement(ImportStatementContext ctx) {
 		String filePath = getWorkingFilePath(UtilFunctions.unquote(ctx.filePath.getText()));
 		String namespace = getNamespaceSafe(ctx.namespace);
-		DMLProgram prog = parseAndAddImportedFunctions(namespace, filePath, ctx);
-		setupContextInfo(ctx.info, namespace, filePath, ctx.filePath.getText(), prog);
+		setupContextInfo(ctx.info, namespace, filePath, ctx.filePath.getText(),
+			parseAndAddImportedFunctions(namespace, filePath, ctx));
 	}
 
 	// -----------------------------------------------------------------
@@ -546,7 +557,6 @@ public class DmlSyntacticValidator implements DmlListener {
 		ctx.info.expr = createFunctionCall(ctx, namespace, functionName, paramExpression);
 	}
 
-
 	@Override
 	public void exitFunctionCallMultiAssignmentStatement(
 			FunctionCallMultiAssignmentStatementContext ctx) {
@@ -590,26 +600,43 @@ public class DmlSyntacticValidator implements DmlListener {
 				setMultiAssignmentStatement(targetList, e, ctx, ctx.info);
 				return;
 			}
-			handleDMLBodiedBuiltinFunction(functionName, namespace, ctx);
+			handleDMLBodiedBuiltinFunction(functionName, DMLProgram.BUILTIN_NAMESPACE, ctx);
 		}
 
 		// Override default namespace for imported non-built-in function
-		String inferNamespace = (sourceNamespace != null && sourceNamespace.length() > 0 && DMLProgram.DEFAULT_NAMESPACE.equals(namespace)) ? sourceNamespace : namespace;
+		String inferNamespace = (sourceNamespace != null && sourceNamespace.length() > 0 
+			&& DMLProgram.DEFAULT_NAMESPACE.equals(namespace)) ? sourceNamespace : namespace;
 		functCall.setFunctionNamespace(inferNamespace);
 
 		setMultiAssignmentStatement(targetList, functCall, ctx, ctx.info);
 	}
-	
+
 	private void handleDMLBodiedBuiltinFunction(String functionName, String namespace, ParserRuleContext ctx) {
-		if( Builtins.contains(functionName, true, false) ) {
+		if( Builtins.contains(functionName, true, false) 
+			&& !builtinFuns.containsFunction(functionName) )
+		{
 			//load and add builtin DML-bodied functions
 			String filePath = Builtins.getFilePath(functionName);
-			DMLProgram prog = parseAndAddImportedFunctions(namespace, filePath, ctx);
-			for( Entry<String,FunctionStatementBlock> f : prog.getNamedFunctionStatementBlocks().entrySet() )
-				builtinFuns.addFunctionStatementBlock(f.getKey(), f.getValue());
+			DMLProgram tmpProg = parseAndAddImportedFunctions(namespace, filePath, ctx);
+			FunctionDictionary<FunctionStatementBlock> prog = tmpProg.getBuiltinFunctionDictionary();
+			if( prog != null ) { //robustness for existing functions
+				//add builtin functions
+				for( Entry<String,FunctionStatementBlock> f : prog.getFunctions().entrySet() )
+					builtinFuns.addFunction(f.getKey(), f.getValue());
+				//add namespaces loaded by builtin functions (via source)
+				tmpProg.getNamespaces().entrySet().stream()
+					.filter(e -> !e.getKey().equals(DMLProgram.BUILTIN_NAMESPACE))
+					.forEach(e -> {
+						String ns = getQualifiedNamespace(e.getKey());
+						if( builtinFunsNs.containsKey(ns) )
+							builtinFunsNs.get(ns).merge(e.getValue());
+						else
+							builtinFunsNs.put(ns, e.getValue());
+					});
+			}
 		}
 	}
-	
+
 	public static Map<String,FunctionStatementBlock> loadAndParseBuiltinFunction(String name, String namespace) {
 		if( !Builtins.contains(name, true, false) ) {
 			throw new DMLRuntimeException("Function "
@@ -620,15 +647,16 @@ public class DmlSyntacticValidator implements DmlListener {
 		DmlSyntacticValidator tmp = new DmlSyntacticValidator(
 			new CustomErrorListener(), new HashMap<>(), namespace, new HashSet<>());
 		String filePath = Builtins.getFilePath(name);
-		DMLProgram prog = tmp.parseAndAddImportedFunctions(namespace, filePath, null);
+		FunctionDictionary<FunctionStatementBlock> dict = tmp
+			.parseAndAddImportedFunctions(namespace, filePath, null)
+			.getBuiltinFunctionDictionary();
 		
 		//construct output map of all functions
-		return prog.getNamedFunctionStatementBlocks();
+		return dict.getFunctions();
 	}
 
-
 	// -----------------------------------------------------------------
-	// 			Control Statements - Guards & Loops
+	//   Control Statements - Guards & Loops
 	// -----------------------------------------------------------------
 
 	private static StatementBlock getStatementBlock(Statement current) {
@@ -995,25 +1023,7 @@ public class DmlSyntacticValidator implements DmlListener {
 	@Override public void enterProgramroot(ProgramrootContext ctx) {}
 
 	@Override 
-	public void exitProgramroot(ProgramrootContext ctx) {
-		//take over dml-bodied builtin functions into list of script functions
-		for( Entry<String,FunctionStatementBlock> e : builtinFuns.getNamedFunctionStatementBlocks().entrySet() ) {
-			FunctionStatementContext fn = new FunctionStatementContext();
-			fn.info = new StatementInfo();
-			fn.info.stmt = e.getValue().getStatement(0);
-			fn.info.functionName = e.getKey();
-			//existing user-function overrides builtin function
-			if( !containsFunction(ctx, e.getKey()) )
-				ctx.functionBlocks.add(fn);
-		}
-	}
-	
-	private static boolean containsFunction(ProgramrootContext ctx, String fname) {
-		for( FunctionStatementContext fn : ctx.functionBlocks )
-			if( fn.info.functionName.equals(fname) )
-				return true;
-		return false;
-	}
+	public void exitProgramroot(ProgramrootContext ctx) {}
 
 	@Override public void enterDataIdExpression(DataIdExpressionContext ctx) {}
 
@@ -1125,7 +1135,9 @@ public class DmlSyntacticValidator implements DmlListener {
 		//NOTE: the use of File.separator would lead to OS-specific inconsistencies,
 		//which is problematic for second order functions such as eval or paramserv.
 		//Since this is unnecessary, we now use "/" independent of the use OS.
-		return !new File(filePath).isAbsolute() ? workingDir + "/" + filePath : filePath;
+		String prefix = workingDir + "/";
+		return new File(filePath).isAbsolute() | filePath.startsWith(prefix) ?
+			filePath : prefix + filePath;
 	}
 	
 	public String getNamespaceSafe(Token ns) {
@@ -1135,7 +1147,7 @@ public class DmlSyntacticValidator implements DmlListener {
 
 	protected void validateNamespace(String namespace, String filePath, ParserRuleContext ctx) {
 		// error out if different scripts from different file paths are bound to the same namespace
-		if( !DMLProgram.DEFAULT_NAMESPACE.equals(namespace) ) {
+		if( !DMLProgram.isInternalNamespace(namespace) ) {
 			if( sources.containsKey(namespace) && !sources.get(namespace).equals(filePath) )
 				notifyErrorListeners("Namespace Conflict: '" + namespace 
 					+ "' already defined as " + sources.get(namespace), ctx.start);
@@ -1144,14 +1156,19 @@ public class DmlSyntacticValidator implements DmlListener {
 		}
 	}
 	
-	protected void setupContextInfo(StatementInfo info, String namespace, String filePath, String filePath2, DMLProgram prog ) {
+	protected void setupContextInfo(StatementInfo info, String namespace, 
+		String filePath, String filePath2, DMLProgram prog ) {
 		info.namespaces = new HashMap<>();
-		info.namespaces.put(getQualifiedNamespace(namespace), prog);
-		ImportStatement istmt = new ImportStatement();
-		istmt.setCompletePath(filePath);
-		istmt.setFilename(filePath2);
-		istmt.setNamespace(namespace);
-		info.stmt = istmt;
+		if(prog != null) {
+			//add loaded namespaces (imported namespace already w/ correct name, not default)
+			for( Entry<String, FunctionDictionary<FunctionStatementBlock>> e : prog.getNamespaces().entrySet() )
+				info.namespaces.put(getQualifiedNamespace(e.getKey()), e.getValue());
+			ImportStatement istmt = new ImportStatement();
+			istmt.setCompletePath(filePath);
+			istmt.setFilename(filePath2);
+			istmt.setNamespace(namespace);
+			info.stmt = istmt;
+		}
 	}
 
 	protected void setFileLineColumn(Expression expr, ParserRuleContext ctx) {
@@ -1638,7 +1655,7 @@ public class DmlSyntacticValidator implements DmlListener {
 				setAssignmentStatement(ctx, info, target, e);
 				return;
 			}
-			handleDMLBodiedBuiltinFunction(functionName, namespace, ctx);
+			handleDMLBodiedBuiltinFunction(functionName, DMLProgram.BUILTIN_NAMESPACE, ctx);
 		}
 
 		// handle user-defined functions
@@ -1732,7 +1749,7 @@ public class DmlSyntacticValidator implements DmlListener {
 		if (!_f2NS.get().containsKey(scriptID)) {
 			_f2NS.get().put(scriptID, namespace);
 			try {
-				prog = (new DMLParserWrapper()).doParse(filePath,
+				prog = new DMLParserWrapper().doParse(filePath,
 					_tScripts.get().get(filePath), getQualifiedNamespace(namespace), argVals);
 			}
 			catch (ParseException e) {

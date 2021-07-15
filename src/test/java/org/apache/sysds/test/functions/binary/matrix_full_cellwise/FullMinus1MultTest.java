@@ -26,19 +26,15 @@ import org.junit.Test;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
 import org.apache.sysds.hops.OptimizerUtils;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
 import org.apache.sysds.test.TestUtils;
 import org.apache.sysds.utils.Statistics;
 
-/**
- * 
- * 
- */
 public class FullMinus1MultTest extends AutomatedTestBase 
-{	
+{
 	private final static String TEST_NAME = "Minus1MultTest";
 	private final static String TEST_DIR = "functions/binary/matrix_full_cellwise/";
 	private final static String TEST_CLASS_DIR = TEST_DIR + FullMinus1MultTest.class.getSimpleName() + "/";
@@ -126,14 +122,15 @@ public class FullMinus1MultTest extends AutomatedTestBase
 			runRScript(true); 
 		
 			//compare matrices 
-			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("C");
-			HashMap<CellIndex, Double> rfile  = readRMatrixFromFS("C");
+			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("C");
+			HashMap<CellIndex, Double> rfile  = readRMatrixFromExpectedDir("C");
 			TestUtils.compareMatrices(dmlfile, rfile, eps, "Stat-DML", "Stat-R");
 			
 			//check generated opcode
 			if( rewrites ){
 				if( instType == ExecType.CP )
-					Assert.assertTrue("Missing opcode: 1-*", Statistics.getCPHeavyHitterOpCodes().contains("1-*"));
+					Assert.assertTrue("Missing opcode: 1-*", Statistics.getCPHeavyHitterOpCodes().contains("1-*") ||
+							Statistics.getCPHeavyHitterOpCodes().contains("gpu_1-*"));
 				else if( instType == ExecType.SPARK )
 					Assert.assertTrue("Missing opcode: sp_1-* | sp_map1-*", 
 							Statistics.getCPHeavyHitterOpCodes().contains("sp_1-*") || 

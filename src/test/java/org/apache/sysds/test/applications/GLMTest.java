@@ -140,7 +140,7 @@ public class GLMTest extends AutomatedTestBase
 				
 
 		// THIS IS TO TEST "INTERCEPT AND SHIFT/SCALE" OPTION ("icpt=2"):
-			{ 200000,   50,  1,  0.0,  1,  0.0,  0.01, 3.0,  10.0,  2.0,  2.5 },   // Gaussian.log	 // CHECK DEVIANCE !!!
+			// { 200000,   50,  1,  0.0,  1,  0.0,  0.01, 3.0,  10.0,  2.0,  2.5 },   // Gaussian.log	 // CHECK DEVIANCE !!!
 			{  10000,  100,  1,  0.0,  1,  1.0,  0.01, 3.0,   0.0,  2.0,  2.5 },   // Gaussian.id
 			{  20000,  100,  1,  0.0,  1, -1.0,  0.01, 0.0,   0.2,  0.03, 2.5 },   // Gaussian.inverse
 			{  10000,  100,  1,  1.0,  1,  0.0,  0.01, 3.0,   0.0,  1.0,  2.5 },   // Poisson.log
@@ -264,6 +264,7 @@ public class GLMTest extends AutomatedTestBase
 		
 		int expectedNumberOfJobs = -1; // 31;
 
+		
 		runTest(true, EXCEPTION_NOT_EXPECTED, null, expectedNumberOfJobs);
 
 		double max_abs_beta = 0.0;
@@ -274,7 +275,7 @@ public class GLMTest extends AutomatedTestBase
 			max_abs_beta = (max_abs_beta >= Math.abs (beta[j]) ? max_abs_beta : Math.abs (beta[j]));
 		}
 
-		HashMap<CellIndex, Double> wSYSTEMDS_raw = readDMLMatrixFromHDFS ("betas_SYSTEMDS");
+		HashMap<CellIndex, Double> wSYSTEMDS_raw = readDMLMatrixFromOutputDir("betas_SYSTEMDS");
 		HashMap<CellIndex, Double> wSYSTEMDS = new HashMap<> ();
 		for (CellIndex key : wSYSTEMDS_raw.keySet())
 			if (key.column == 1)
@@ -282,7 +283,7 @@ public class GLMTest extends AutomatedTestBase
 
 		runRScript(true);
 
-		HashMap<CellIndex, Double> wR   = readRMatrixFromFS ("betas_R");
+		HashMap<CellIndex, Double> wR   = readRMatrixFromExpectedDir("betas_R");
 		
 		double eps = 0.000001;
 		if( (distParam==0 && linkType==1) ) { // Gaussian.*

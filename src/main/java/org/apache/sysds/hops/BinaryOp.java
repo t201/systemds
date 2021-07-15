@@ -43,7 +43,7 @@ import org.apache.sysds.lops.CoVariance;
 import org.apache.sysds.lops.Data;
 import org.apache.sysds.lops.DnnTransform;
 import org.apache.sysds.lops.Lop;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.lops.PickByCount;
 import org.apache.sysds.lops.SortKeys;
 import org.apache.sysds.lops.Unary;
@@ -225,7 +225,7 @@ public class BinaryOp extends MultiThreadedHop
 
 		//add reblock/checkpoint lops if necessary
 		constructAndSetLopsDataFlowProperties();
-		
+
 		return getLops();
 	}
 	
@@ -414,12 +414,14 @@ public class BinaryOp extends MultiThreadedHop
 				(op==OpOp2.MULT && HopRewriteUtils.isLiteralOfValue(right, 2d)) ? OpOp1.MULT2 : null;
 			Lop tmp = null;
 			if( ot != null ) {
-				tmp = new Unary(getInput().get(0).constructLops(),
-					getInput().get(1).constructLops(), ot, getDataType(), getValueType(), et);
+				tmp = new Unary(getInput(0).constructLops(), getInput(1).constructLops(),
+					ot, getDataType(), getValueType(), et,
+					OptimizerUtils.getConstrainedNumThreads(_maxNumThreads));
 			}
 			else { //general case
-				tmp = new Binary(getInput().get(0).constructLops(),
-					getInput().get(1).constructLops(), op, getDataType(), getValueType(), et);
+				tmp = new Binary(getInput(0).constructLops(), getInput(1).constructLops(),
+					op, getDataType(), getValueType(), et,
+					OptimizerUtils.getConstrainedNumThreads(_maxNumThreads));
 			}
 			setOutputDimensions(tmp);
 			setLineNumbers(tmp);
@@ -441,7 +443,7 @@ public class BinaryOp extends MultiThreadedHop
 				setLineNumbers(softmax);
 				setLops(softmax);
 			}
-			else if ( et == ExecType.CP || et == ExecType.GPU ) 
+			else if ( et == ExecType.CP || et == ExecType.GPU || et == ExecType.FED )
 			{
 				Lop binary = null;
 				
@@ -458,10 +460,10 @@ public class BinaryOp extends MultiThreadedHop
 						getDataType(), getValueType(), et, OptimizerUtils.getConstrainedNumThreads(_maxNumThreads));
 				}
 				else
-					binary = new Binary(getInput().get(0).constructLops(),
-						getInput().get(1).constructLops(), op,
-						getDataType(), getValueType(), et);
-				
+					binary = new Binary(getInput(0).constructLops(), getInput(1).constructLops(),
+						op, getDataType(), getValueType(), et,
+						OptimizerUtils.getConstrainedNumThreads(_maxNumThreads));
+
 				setOutputDimensions(binary);
 				setLineNumbers(binary);
 				setLops(binary);
@@ -495,7 +497,7 @@ public class BinaryOp extends MultiThreadedHop
 				setOutputDimensions(binary);
 				setLineNumbers(binary);
 				setLops(binary);
-			}
+			} else throw new HopsException("Lop construction not implemented for ExecType " + et);
 		}
 	}
 
@@ -739,6 +741,8 @@ public class BinaryOp extends MultiThreadedHop
 			//check for valid CP dimensions and matrix size
 			checkAndSetInvalidCPDimsAndSize();
 		}
+
+		updateETFed();
 			
 		//spark-specific decision refinement (execute unary scalar w/ spark input and 
 		//single parent also in spark because it's likely cheap and reduces intermediates)
@@ -1054,7 +1058,10 @@ public class BinaryOp extends MultiThreadedHop
 	{
 		if( !(that instanceof BinaryOp) )
 			return false;
-		
+
+		if(op == OpOp2.MAP)
+			return false; // custom UDFs
+
 		BinaryOp that2 = (BinaryOp)that;
 		return (   op == that2.op
 				&& outer == that2.outer

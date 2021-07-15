@@ -19,15 +19,49 @@
 
 package org.apache.sysds.test;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
+
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.DataOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.FileReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
+import java.io.PrintWriter;
+import java.text.NumberFormat;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Random;
+import java.util.Set;
+import java.util.StringTokenizer;
+
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.SequenceFile;
-import org.junit.Assert;
+import org.apache.hadoop.io.SequenceFile.Writer;
 import org.apache.sysds.common.Types.FileFormat;
 import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.runtime.data.TensorBlock;
@@ -42,12 +76,9 @@ import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.runtime.meta.MatrixCharacteristics;
 import org.apache.sysds.runtime.util.DataConverter;
 import org.apache.sysds.runtime.util.UtilFunctions;
+import org.junit.Assert;
 
-import java.io.*;
-import java.text.NumberFormat;
-import java.util.*;
-
-import static org.junit.Assert.*;
+//import jcuda.runtime.JCuda;
 
 
 /**
@@ -62,9 +93,11 @@ import static org.junit.Assert.*;
  * <li>clean up</li>
  * </ul>
  */
-public class TestUtils 
+public class TestUtils
 {
-	
+
+	private static final Log LOG = LogFactory.getLog(TestUtils.class.getName());
+
 	/** job configuration used for file system access */
 	public static Configuration conf = new Configuration();
 
@@ -81,14 +114,14 @@ public class TestUtils
 		try {
 			String lineExpected = null;
 			String lineActual = null;
-			
+
 			Path compareFile = new Path(expectedFile);
 			FileSystem fs = IOUtilFunctions.getFileSystem(compareFile, conf);
 			FSDataInputStream fsin = fs.open(compareFile);
 			try( BufferedReader compareIn = new BufferedReader(new InputStreamReader(fsin)) ) {
 				lineExpected = compareIn.readLine();
 			}
-			
+
 			Path outFile = new Path(actualFile);
 			FSDataInputStream fsout = fs.open(outFile);
 			try( BufferedReader outIn = new BufferedReader(new InputStreamReader(fsout)) ) {
@@ -101,7 +134,7 @@ public class TestUtils
 			fail("unable to read file: " + e.getMessage());
 		}
 	}
-	
+
 	/**
 	 * Compares contents of an expected file with the actual file, where rows may be permuted
 	 * @param expectedFile
@@ -113,7 +146,7 @@ public class TestUtils
 	{
 		try {
 			HashMap<CellIndex, Double> expectedValues = new HashMap<>();
-			
+
 			Path outDirectory = new Path(actualDir);
 			Path compareFile = new Path(expectedFile);
 			FileSystem fs = IOUtilFunctions.getFileSystem(outDirectory, conf);
@@ -135,35 +168,35 @@ public class TestUtils
 				if(expectedValue != 0.0)
 					e_list.add(expectedValue);
 			}
-			
+
 			ArrayList<Double> a_list = new ArrayList<>();
 			for (CellIndex index : actualValues.keySet()) {
 				Double actualValue = actualValues.get(index);
 				if(actualValue != 0.0)
 					a_list.add(actualValue);
 			}
-			
+
 			Collections.sort(e_list);
 			Collections.sort(a_list);
-			
+
 			assertTrue("Matrix nzs not equal", e_list.size() == a_list.size());
 			for(int i=0; i < e_list.size(); i++)
 			{
 				assertTrue("Matrix values not equals", Math.abs(e_list.get(i) - a_list.get(i)) <= epsilon);
 			}
-			
+
 		} catch (IOException e) {
 			fail("unable to read file: " + e.getMessage());
 		}
 	}
-	
+
 	/**
 	 * <p>
 	 * Compares the expected values calculated in Java by testcase and which are
 	 * in the normal filesystem, with those calculated by SystemDS located in
 	 * HDFS with Matrix Market format
 	 * </p>
-	 * 
+	 *
 	 * @param expectedFile
 	 *            file with expected values, which is located in OS filesystem
 	 * @param actualDir
@@ -178,49 +211,53 @@ public class TestUtils
 			Path compareFile = new Path(expectedFile);
 			FileSystem fs = IOUtilFunctions.getFileSystem(outDirectory, conf);
 			FSDataInputStream fsin = fs.open(compareFile);
-			
+
 			HashMap<CellIndex, Double> expectedValues = new HashMap<>();
 			String[] expRcn = null;
-			
+
 			try(BufferedReader compareIn = new BufferedReader(new InputStreamReader(fsin)) ) {
 				// skip the header of Matrix Market file
 				String line = compareIn.readLine();
-				
+
 				// rows, cols and nnz
 				line = compareIn.readLine();
 				expRcn = line.split(" ");
-				
+
 				readValuesFromFileStreamAndPut(compareIn, expectedValues);
 			}
-			
+
 			HashMap<CellIndex, Double> actualValues = new HashMap<>();
 
 			FSDataInputStream fsout = fs.open(outDirectory);
 			try( BufferedReader outIn = new BufferedReader(new InputStreamReader(fsout)) ) {
-					
+
 				//skip MM header
 				String line = outIn.readLine();
-				
+
 				//rows, cols and nnz
 				line = outIn.readLine();
 				String[] rcn = line.split(" ");
-				
+
 				if (Integer.parseInt(expRcn[0]) != Integer.parseInt(rcn[0])) {
-					System.out.println(" Rows mismatch: expected " + Integer.parseInt(expRcn[0]) + ", actual " + Integer.parseInt(rcn[0]));
+					LOG.warn(" Rows mismatch: expected " + Integer.parseInt(expRcn[0]) + ", actual " + Integer.parseInt(rcn[0]));
 				}
 				else if (Integer.parseInt(expRcn[1]) != Integer.parseInt(rcn[1])) {
-					System.out.println(" Cols mismatch: expected " + Integer.parseInt(expRcn[1]) + ", actual " + Integer.parseInt(rcn[1]));
+					LOG.warn(" Cols mismatch: expected " + Integer.parseInt(expRcn[1]) + ", actual " + Integer.parseInt(rcn[1]));
 				}
 				else if (Integer.parseInt(expRcn[2]) != Integer.parseInt(rcn[2])) {
-					System.out.println(" Nnz mismatch: expected " + Integer.parseInt(expRcn[2]) + ", actual " + Integer.parseInt(rcn[2]));
+					LOG.warn(" Nnz mismatch: expected " + Integer.parseInt(expRcn[2]) + ", actual " + Integer.parseInt(rcn[2]));
 				}
 
 				readValuesFromFileStreamAndPut(outIn, actualValues);
 			}
-			
+
+			Set<CellIndex> allKeys = new HashSet<>();
+			allKeys.addAll(expectedValues.keySet());
+			if(expectedValues.size() != actualValues.size())
+				allKeys.addAll(actualValues.keySet());
 
 			int countErrors = 0;
-			for (CellIndex index : expectedValues.keySet()) {
+			for (CellIndex index : allKeys) {
 				Double expectedValue = expectedValues.get(index);
 				Double actualValue = actualValues.get(index);
 				if (expectedValue == null)
@@ -238,12 +275,12 @@ public class TestUtils
 			fail("unable to read file: " + e.getMessage());
 		}
 	}
-	
+
 	/**
-	 * Read doubles from the input stream and put them into the given hashmap of values. 
+	 * Read doubles from the input stream and put them into the given hashmap of values.
 	 * @param inputStream input stream of doubles with related indices
 	 * @param values hashmap of values (initially empty)
-	 * @throws IOException 
+	 * @throws IOException
 	 */
 	public static void readValuesFromFileStream(FSDataInputStream inputStream, HashMap<CellIndex, Double> values)
 		throws IOException
@@ -258,7 +295,7 @@ public class TestUtils
 	 * @param inReader BufferedReader to read values from
 	 * @param values hashmap where values are put
 	*/
-	public static void readValuesFromFileStreamAndPut(BufferedReader inReader, HashMap<CellIndex, Double> values) 
+	public static void readValuesFromFileStreamAndPut(BufferedReader inReader, HashMap<CellIndex, Double> values)
 		throws IOException
 	{
 		String line = null;
@@ -324,14 +361,14 @@ public class TestUtils
 			fail("unable to read file: " + e.getMessage());
 		}
 	}
-	
+
 	/**
 	 * <p>
 	 * Compares the expected values calculated in Java by testcase and which are
 	 * in the normal filesystem, with those calculated by SystemDS located in
 	 * HDFS
 	 * </p>
-	 * 
+	 *
 	 * @param expectedFile
 	 *            file with expected values, which is located in OS filesystem
 	 * @param actualDir
@@ -346,8 +383,12 @@ public class TestUtils
 
 		readActualAndExpectedFile(null, expectedFile, actualDir, expectedValues, actualValues);
 
+		Set<CellIndex> allKeys = new HashSet<>();
+		allKeys.addAll(expectedValues.keySet());
+		if(expectedValues.size() != actualValues.size())
+			allKeys.addAll(actualValues.keySet());
 		int countErrors = 0;
-		for(CellIndex index : expectedValues.keySet()) {
+		for(CellIndex index : allKeys) {
 			Double expectedValue = (Double) expectedValues.get(index);
 			Double actualValue = (Double) actualValues.get(index);
 			if(expectedValue == null)
@@ -363,7 +404,7 @@ public class TestUtils
 		}
 		assertEquals("for file " + actualDir + " " + countErrors + " values are not equal", 0, countErrors);
 	}
-	
+
 	/**
 	 * <p>
 	 * Compares the expected values calculated in Java by testcase and which are
@@ -383,8 +424,12 @@ public class TestUtils
 
 		readActualAndExpectedFile(schema, expectedFile, actualDir, expectedValues, actualValues);
 
+		Set<CellIndex> allKeys = new HashSet<>();
+		allKeys.addAll(expectedValues.keySet());
+		if(expectedValues.size() != actualValues.size())
+			allKeys.addAll(actualValues.keySet());
 		int countErrors = 0;
-		for(CellIndex index : expectedValues.keySet()) {
+		for(CellIndex index : allKeys) {
 			Object expectedValue = expectedValues.get(index);
 			Object actualValue = actualValues.get(index);
 
@@ -397,7 +442,7 @@ public class TestUtils
 		}
 		assertEquals("for file " + actualDir + " " + countErrors + " values are not equal", 0, countErrors);
 	}
-	
+
 	public static void compareTensorBlocks(TensorBlock tb1, TensorBlock tb2) {
 		Assert.assertEquals(tb1.getValueType(), tb2.getValueType());
 		Assert.assertArrayEquals(tb1.getSchema(), tb2.getSchema());
@@ -407,12 +452,12 @@ public class TestUtils
 			for (int j = 0; j < tb1.getNumColumns(); j++)
 				Assert.assertEquals(tb1.get(new int[]{i, j}), tb2.get(new int[]{i, j}));
 	}
-	
+
 	public static TensorBlock createBasicTensor(ValueType vt, int rows, int cols, double sparsity) {
 		return DataConverter.convertToTensorBlock(TestUtils.round(
 			MatrixBlock.randOperations(rows, cols, sparsity, 0, 10, "uniform", 7)), vt, true);
 	}
-	
+
 	public static TensorBlock createDataTensor(ValueType vt, int rows, int cols, double sparsity) {
 		return DataConverter.convertToTensorBlock(TestUtils.round(
 			MatrixBlock.randOperations(rows, cols, sparsity, 0, 10, "uniform", 7)), vt, false);
@@ -420,17 +465,18 @@ public class TestUtils
 
 	/**
 	 * Reads values from a matrix file in HDFS in DML format
-	 * 
-	 * @deprecated You should not use this method, it is recommended to use the
-	 *             corresponding method in AutomatedTestBase
-	 * @param filePath
-	 * @return
+	 *
+	 * NOTE: For reading the output of a matrix produced by a JUnit test, use the convenience
+	 *       function {@link AutomatedTestBase#readDMLMatrixFromOutputDir(String)}
+	 *
+	 * @param filePath Path to the file to be read.
+	 * @return Matrix values in a hashmap <index,value>
 	 */
-	public static HashMap<CellIndex, Double> readDMLMatrixFromHDFS(String filePath) 
+	public static HashMap<CellIndex, Double> readDMLMatrixFromHDFS(String filePath)
 	{
 		HashMap<CellIndex, Double> expectedValues = new HashMap<>();
-		
-		try 
+
+		try
 		{
 			Path outDirectory = new Path(filePath);
 			FileSystem fs = IOUtilFunctions.getFileSystem(outDirectory, conf);
@@ -440,7 +486,7 @@ public class TestUtils
 				FSDataInputStream outIn = fs.open(file.getPath());
 				readValuesFromFileStream(outIn, expectedValues);
 			}
-		} 
+		}
 		catch (IOException e) {
 			assertTrue("could not read from file " + filePath+": "+e.getMessage(), false);
 		}
@@ -450,33 +496,33 @@ public class TestUtils
 
 	/**
 	 * Reads values from a matrix file in OS's FS in R format
-	 * 
-	 * @deprecated You should not use this method, it is recommended to use the
-	 *             corresponding method in AutomatedTestBase
-	 * 
-	 * @param filePath
-	 * @return
+	 *
+	 * NOTE: For reading the output of a matrix produced by a R validation code of a JUnit test, use the convenience
+	 *       function {@link AutomatedTestBase#readRMatrixFromExpectedDir(String)}
+	 *
+	 * @param filePath Path to the file to be read.
+	 * @return Matrix values in a hashmap <index,value>
 	 */
-	public static HashMap<CellIndex, Double> readRMatrixFromFS(String filePath) 
+	public static HashMap<CellIndex, Double> readRMatrixFromFS(String filePath)
 	{
 		HashMap<CellIndex, Double> expectedValues = new HashMap<>();
-		
-		try(BufferedReader reader = new BufferedReader(new FileReader(filePath))) 
+
+		try(BufferedReader reader = new BufferedReader(new FileReader(filePath)))
 		{
 			// skip both R header lines
 			String line = reader.readLine();
-			
+
 			int matrixType = -1;
 			if ( line.endsWith(" general") )
 				matrixType = 1;
 			if ( line.endsWith(" symmetric") )
 				matrixType = 2;
-			
+
 			if ( matrixType == -1 )
 				throw new RuntimeException("unknown matrix type while reading R matrix: " + line);
-			
+
 			line = reader.readLine(); // header line with dimension and nnz information
-			
+
 			while ((line = reader.readLine()) != null) {
 				StringTokenizer st = new StringTokenizer(line, " ");
 				int i = Integer.parseInt(st.nextToken());
@@ -494,14 +540,14 @@ public class TestUtils
 						expectedValues.put(new CellIndex(j, i), 1.0);
 				}
 			}
-		} 
+		}
 		catch (IOException e) {
 			assertTrue("could not read from file " + filePath, false);
 		}
-		
+
 		return expectedValues;
 	}
-	
+
 	/**
 	 * Reads a scalar value in DML format from HDFS
 	 */
@@ -554,7 +600,7 @@ public class TestUtils
 		}
 		return _AssertOccured;
 	}
-	
+
 	public static String readDMLString(String filePath) {
 		try {
 			StringBuilder sb =  new StringBuilder();
@@ -573,8 +619,8 @@ public class TestUtils
 		}
 		return null;
 	}
-		
-	
+
+
 	/**
 	 * Reads a scalar value in R format from OS's FS
 	 */
@@ -583,7 +629,7 @@ public class TestUtils
 		expectedValues.put(new CellIndex(1,1), readRScalar(filePath));
 		return expectedValues;
 	}
-	
+
 	public static Double readRScalar(String filePath) {
 		try {
 			double d = Double.NaN;
@@ -599,12 +645,28 @@ public class TestUtils
 		}
 		return Double.NaN;
 	}
+
+	public static double[][] readExpectedResource(String file, int rows, int cols) throws IOException {
+		String file2 = "src/test/resources/expected/" + file;
+		double[][] ret = new double[rows][cols];
+		try(BufferedReader br = new BufferedReader(new FileReader(file2))) {
+			String line = null;
+			int i = 0;
+			while((line = br.readLine()) != null) {
+				String[] tmp = line.trim().split(" ");
+				for (int j=0; j<tmp.length; j++)
+					ret[i][j] = Double.parseDouble(tmp[j]);
+				i++;
+			}
+		}
+		return ret;
+	}
 	
 	public static String processMultiPartCSVForR(String csvFile) throws IOException {
 		File csv = new File(csvFile);
 		if (csv.isDirectory()) {
 			File[] parts = csv.listFiles();
-			
+
 			int count=0;
 			int index = -1;
 			for(int i=0; i < parts.length; i++ ) {
@@ -615,7 +677,7 @@ public class TestUtils
 				count++;
 				index = i;
 			}
-			
+
 			if ( count == 1) {
 				csvFile = parts[index].toString();
 			}
@@ -642,7 +704,7 @@ public class TestUtils
 						out.append(fileContents);
 					}
 				}
-				
+
 				csvFile = tmp.getCanonicalPath();
 			}
 			else {
@@ -655,7 +717,7 @@ public class TestUtils
 	/**
 	 * Compares two double values regarding tolerance t. If one or both of them
 	 * is null it is converted to 0.0.
-	 * 
+	 *
 	 * @param v1
 	 * @param v2
 	 * @param t Tolerance
@@ -678,51 +740,61 @@ public class TestUtils
 
 		return Math.abs(v1 - v2) <= t;
 	}
-	
+
 	public static void compareMatrices(double[] expectedMatrix, double[] actualMatrix, double epsilon) {
-		compareMatrices(new double[][]{expectedMatrix}, 
+		compareMatrices(new double[][]{expectedMatrix},
 			new double[][]{actualMatrix}, 1, expectedMatrix.length, epsilon);
 	}
-	
-	/**
-	 * Compares two matrices in array format.
-	 * 
-	 * @param expectedMatrix expected values
-	 * @param actualMatrix actual values
-	 * @param rows number of rows
-	 * @param cols number of columns
-	 * @param epsilon tolerance for value comparison
-	 */
+
+
 	public static void compareMatrices(double[][] expectedMatrix, double[][] actualMatrix, int rows, int cols,
-			double epsilon) {
+		double epsilon) {
+		compareMatrices(expectedMatrix, actualMatrix, expectedMatrix.length, expectedMatrix[0].length, epsilon, "");
+	}
+
+	public static void compareMatrices(double[][] expectedMatrix, double[][] actualMatrix, int rows, int cols,
+			double epsilon, String message) {
 		int countErrors = 0;
-		for (int i = 0; i < rows; i++) {
-			for (int j = 0; j < cols; j++) {
-				if (!compareCellValue(expectedMatrix[i][j], actualMatrix[i][j], epsilon, false)) {
-					System.out.println(expectedMatrix[i][j] +" vs actual: "+actualMatrix[i][j]+" at "+i+" "+j);
+		for (int i = 0; i < rows && countErrors < 50; i++) {
+			for (int j = 0; j < cols && countErrors < 50; j++) {
+				if (!compareCellValue(expectedMatrix[i][j], actualMatrix[i][j], epsilon, true)) {
+					message += ("\n Expected: " +expectedMatrix[i][j] +" vs actual: "+actualMatrix[i][j]+" at "+i+" "+j);
 					countErrors++;
 				}
 			}
 		}
-		assertTrue("" + countErrors + " values are not in equal", countErrors == 0);
+		if(countErrors == 50){
+			assertTrue(message+" \n More than 50 values are not equal using epsilon " + epsilon, countErrors == 0);
+		}else{
+			assertTrue(message+" \n" + countErrors + " values are not in equal using epsilon " + epsilon, countErrors == 0);
+		}
 	}
-	
+
+	public static void compareMatrices(double[][] expectedMatrix, double[][] actualMatrix, double epsilon){
+		compareMatrices(expectedMatrix, actualMatrix, epsilon, "");
+	}
+
+	public static void compareMatrices(double[][] expectedMatrix, double[][] actualMatrix, double epsilon, String message){
+		assertEqualColsAndRows(expectedMatrix,actualMatrix);
+		compareMatrices(expectedMatrix, actualMatrix, expectedMatrix.length, expectedMatrix[0].length, epsilon, message);
+	}
+
 	public static void compareFrames(String[][] expectedFrame, String[][] actualFrame, int rows, int cols ) {
 		int countErrors = 0;
 		for (int i = 0; i < rows; i++) {
 			for (int j = 0; j < cols; j++) {
 				if( !( (expectedFrame[i][j]==null && actualFrame[i][j]==null) ||
 					expectedFrame[i][j].equals(actualFrame[i][j]) || (expectedFrame[i][j]+".0").equals(actualFrame[i][j])) ) {
-					System.out.println(expectedFrame[i][j] +" vs actual: "+actualFrame[i][j]+" at "+i+" "+j);
+					System.out.println("Expected:" + expectedFrame[i][j] +" vs actual: "+actualFrame[i][j]+" at "+i+" "+j);
 					countErrors++;
 				}
 			}
 		}
 		assertTrue("" + countErrors + " values are not in equal", countErrors == 0);
 	}
-	
+
 	public static void compareScalars(double d1, double d2, double tol) {
-		assertTrue("Given scalars do not match: " + d1 + " != " + d2 , compareCellValue(d1, d2, tol, false));	
+		assertTrue("Given scalars do not match: " + d1 + " != " + d2 , compareCellValue(d1, d2, tol, false));
 	}
 
 	public static void compareMatricesBit(double[][] expectedMatrix, double[][] actualMatrix, int rows, int cols,
@@ -731,7 +803,7 @@ public class TestUtils
 		for (int i = 0; i < rows; i++) {
 			for (int j = 0; j < cols; j++) {
 				if( !compareScalarBits(expectedMatrix[i][j], actualMatrix[i][j], maxUnitsOfLeastPrecision)){
-					System.out.println(expectedMatrix[i][j] +" vs actual: "+actualMatrix[i][j]+" at "+i+" "+j);
+					System.out.println("Expected: " + expectedMatrix[i][j] +" vs actual: "+actualMatrix[i][j]+" at "+i+" "+j);
 					countErrors++;
 				}
 			}
@@ -739,25 +811,154 @@ public class TestUtils
 		assertTrue("" + countErrors + " values are not in equal", countErrors == 0);
 	}
 
+	public static void compareMatricesBitAvgDistance(double[][] expectedMatrix, double[][] actualMatrix,
+			long maxUnitsOfLeastPrecision, long maxAvgDistance, String message){
+		assertEqualColsAndRows(expectedMatrix,actualMatrix);
+		compareMatricesBitAvgDistance(expectedMatrix, actualMatrix, expectedMatrix.length, actualMatrix[0].length,
+			maxUnitsOfLeastPrecision, maxAvgDistance, message);
+	}
+
 	public static void compareMatricesBitAvgDistance(double[][] expectedMatrix, double[][] actualMatrix, int rows, int cols,
 		long maxUnitsOfLeastPrecision, long maxAvgDistance, String message){
 		int countErrors = 0;
 		long sumDistance = 0;
 		long distance;
-		for (int i = 0; i < rows; i++) {
-			for (int j = 0; j < cols; j++) {
-				distance = compareScalarBits(expectedMatrix[i][j], actualMatrix[i][j]);
-				sumDistance += distance;
-				if(distance > maxUnitsOfLeastPrecision){
-					System.out.println(expectedMatrix[i][j] +" vs actual: "+actualMatrix[i][j]+" at "+i+" "+j);
-					countErrors++;
+		for (int i = 0; i < rows && countErrors < 20; i++) {
+			for (int j = 0; j < cols && countErrors < 20; j++) {
+				double v1 = expectedMatrix[i][j];
+				double v2 = actualMatrix[i][j];
+				if(v1 == 0 && v2 == 0)
+					continue;
+				else if(v1 == 0 || v2 == 0){
+    				if( Math.abs(v1 - v2) > 1E-16){
+						message +=  ("\n Expected:" + v1 +" vs actual: "+v2+" at "+i+" "+j + " Not using Bit distance since one value is 0");
+						countErrors ++;
+					}
+				}
+				else{
+					distance = compareScalarBits(expectedMatrix[i][j], actualMatrix[i][j]);
+					sumDistance += distance;
+					if(distance > maxUnitsOfLeastPrecision){
+						message += ("\n Expected:" + v1 +" vs actual: "+v2+" at "+i+" "+j + " Distance in bits: " + distance);
+						countErrors++;
+					}
+
 				}
 			}
 		}
-		long avgDistance = sumDistance / (rows * cols);
-		assertTrue(message + "\n" + countErrors + " values are not in equal", countErrors == 0);
-		assertTrue(message + "\nThe avg distance in bits: "+ avgDistance +" was higher than max: " + maxAvgDistance,
-			avgDistance <= maxAvgDistance);
+		if(countErrors == 20){
+			assertTrue(message + "\n At least 20 values are not in equal", countErrors == 0);
+		}
+		else{
+			long avgDistance = sumDistance / (rows * cols);
+			assertTrue(message + "\n" + countErrors + " values are not in equal", countErrors == 0);
+			assertTrue(message + "\nThe avg distance in bits: "+ avgDistance +" was higher than max: " + maxAvgDistance,
+				avgDistance <= maxAvgDistance);
+		}
+	}
+
+	/**
+	 * Get Percent Distance with slight cheat where if values are close to 0.
+	 * @param x value 1
+	 * @param y value 2
+	 * @return Percent distance
+	 */
+	public static double getPercentDistance(double x, double y, boolean ignoreZero){
+		if (Double.isNaN(x) && Double.isNaN(y))
+			return 1.0;
+		if (Double.isInfinite(x) && Double.isInfinite(y))
+			return 1.0;
+		if((x < 0 && y > 0 )||(x>0 && y< 0)) return 0.0;
+		double min = Math.abs(Math.min(x,y));
+		double max = Math.abs(Math.max(x,y));
+		if(ignoreZero && min < 0.0001){
+			return 1.0;
+		}
+		if(min < 0.0001 || max < 0.0001){
+			min += 0.0001;
+			max += 0.0001;
+		}
+
+		assertFalse("Failed! because nan frin division of : " + min + " / " + max,Double.isNaN( min / max));
+		return min / max;
+	}
+
+	private static void assertEqualColsAndRows(double[][] expectedMatrix, double[][] actualMatrix){
+		assertTrue("The number of columns in the matrixes should be equal :"
+			+ expectedMatrix.length  + "  "
+			+ actualMatrix.length,
+			expectedMatrix.length == actualMatrix.length);
+		assertTrue("The number of rows in the matrixes should be equal"
+			+ expectedMatrix[0].length  + "  "
+			+ actualMatrix[0].length,
+			expectedMatrix[0].length == actualMatrix[0].length);
+	}
+
+	public static void compareMatricesPercentageDistance(double[][] expectedMatrix, double[][] actualMatrix,
+			double percentDistanceAllowed, double maxAveragePercentDistance,  String message){
+		assertEqualColsAndRows(expectedMatrix,actualMatrix);
+		compareMatricesPercentageDistance(expectedMatrix, actualMatrix, expectedMatrix.length, expectedMatrix[0].length,
+			percentDistanceAllowed, maxAveragePercentDistance, message, false);
+	}
+
+	public static void compareMatricesPercentageDistance(double[][] expectedMatrix, double[][] actualMatrix,
+			double percentDistanceAllowed, double maxAveragePercentDistance,  String message, boolean ignoreZero){
+		assertEqualColsAndRows(expectedMatrix,actualMatrix);
+		compareMatricesPercentageDistance(expectedMatrix, actualMatrix, expectedMatrix.length, expectedMatrix[0].length,
+			percentDistanceAllowed, maxAveragePercentDistance, message, ignoreZero);
+	}
+
+	public static void compareMatricesPercentageDistance(double[][] expectedMatrix, double[][] actualMatrix, int rows,
+		int cols, double percentDistanceAllowed, double maxAveragePercentDistance,  String message, boolean ignoreZero){
+			assertTrue("percentDistanceAllowed should be between 1 and 0", percentDistanceAllowed >= 0.0 && percentDistanceAllowed <= 1.0);
+			assertTrue("maxAveragePercentDistance should be between 1 and 0", maxAveragePercentDistance >= 0.0 && maxAveragePercentDistance <= 1.0);
+
+			int countErrors = 0;
+			double sumPercentDistance = 0;
+			double distance;
+
+			for (int i = 0; i < rows && countErrors < 20; i++) {
+				for (int j = 0; j < cols && countErrors < 20; j++) {
+					distance = getPercentDistance(expectedMatrix[i][j], actualMatrix[i][j], ignoreZero);
+					sumPercentDistance += distance;
+					if(distance < percentDistanceAllowed){
+						message += ("\nExpected: "+ expectedMatrix[i][j] +" vs actual: "+actualMatrix[i][j]+" at "+i+" "+j + " Distance in percent " + distance);
+						countErrors++;
+					}
+				}
+			}
+			if(countErrors == 20){
+				assertTrue(message + "\n At least 20 values are not in equal", countErrors == 0);
+			}
+			else{
+				double avgDistance = sumPercentDistance / (rows * cols);
+				assertTrue(message + "\n" + countErrors + " values are not in equal of total: " + (rows * cols), countErrors == 0);
+				assertTrue(message + "\nThe avg distance: "+ avgDistance +" was lower than threshold " + maxAveragePercentDistance,
+					avgDistance > maxAveragePercentDistance);
+			}
+	}
+
+	public static void compareMatricesAvgRowDistance(double[][] expectedMatrix, double[][] actualMatrix, int rows,
+		int cols, double averageDistanceAllowed){
+			String message = "";
+			int countErrors = 0;
+
+			for (int i = 0; i < rows && countErrors < 20; i++) {
+				double distanceSum = 0;
+				for (int j = 0; j < cols && countErrors < 20; j++) {
+					distanceSum += expectedMatrix[i][j] - actualMatrix[i][j];
+				}
+				if(distanceSum / cols > averageDistanceAllowed){
+					message += ("Average distance for row " + i + ":" + (distanceSum / cols) + "\n");
+					countErrors++;
+				}
+			}
+			if(countErrors == 20){
+				assertTrue(message + "\n At least 20 values are not in equal", countErrors == 0);
+			}
+			else{
+				assertTrue(message + "\n" + countErrors + " values are not in equal of total: " + (rows), countErrors == 0);
+			}
 	}
 
 	public static void compareMatricesBitAvgDistance(double[][] expectedMatrix, double[][] actualMatrix, int rows,
@@ -767,21 +968,24 @@ public class TestUtils
 
 	/**
 	 * Compare two double precision floats for equality within a margin of error.
-	 *  
+	 *
 	 * This can be used to compensate for inequality caused by accumulated
 	 * floating point math errors.
-	 * 
+	 *
 	 * The error margin is specified in ULPs (units of least precision).
 	 * A one-ULP difference means there are no representable floats in between.
 	 * E.g. 0f and 1.4e-45f are one ULP apart. So are -6.1340704f and -6.13407f.
 	 * Depending on the number of calculations involved, typically a margin of
 	 * 1-5 ULPs should be enough.
-	 * 
+	 *
 	 * @param d1 The expected value.
 	 * @param d2 The actual value.
-	 * @return Whether they are equal or not.
+	 * @return Whether distance in bits
 	 */
 	public static long compareScalarBits(double d1, double d2) {
+
+		// assertTrue("Both values should be positive or negative",(d1 >= 0 && d2 >= 0) || (d2 <= 0 && d1 <= 0));
+
 		long expectedBits = Double.doubleToLongBits(d1) < 0 ? 0x8000000000000000L - Double.doubleToLongBits(d1) : Double.doubleToLongBits(d1);
 		long actualBits = Double.doubleToLongBits(d2) < 0 ? 0x8000000000000000L - Double.doubleToLongBits(d2) : Double.doubleToLongBits(d2);
 		long difference = expectedBits > actualBits ? expectedBits - actualBits : actualBits - expectedBits;
@@ -791,6 +995,8 @@ public class TestUtils
 	public static boolean compareScalarBits(double d1, double d2, long maxUnitsOfLeastPrecision) {
 		if (Double.isNaN(d1) || Double.isNaN(d2))
 			return false;
+
+		// assertTrue("Both values should be positive or negative",(d1 >= 0 && d2 >= 0) || (d2 <= 0 && d1 <= 0));
 		long expectedBits = Double.doubleToLongBits(d1) < 0 ? 0x8000000000000000L - Double.doubleToLongBits(d1) : Double.doubleToLongBits(d1);
 		long actualBits = Double.doubleToLongBits(d2) < 0 ? 0x8000000000000000L - Double.doubleToLongBits(d2) : Double.doubleToLongBits(d2);
 		long difference = expectedBits > actualBits ? expectedBits - actualBits : actualBits - expectedBits;
@@ -798,26 +1004,45 @@ public class TestUtils
 	}
 
 	public static void compareScalarBitsJUnit(double d1, double d2, long maxUnitsOfLeastPrecision){
+		compareScalarBitsJUnit(d1,d2,maxUnitsOfLeastPrecision, null);
+	}
 
-		assertTrue("Given scalars do not match: " + d1 + " != " + d2 ,compareScalarBits(d1,d2,maxUnitsOfLeastPrecision));
+	public static void compareScalarBitsJUnit(double d1, double d2, long maxUnitsOfLeastPrecision, String errorMessage){
+		long distance = compareScalarBits(d1,d2);
+		boolean equal = distance <= maxUnitsOfLeastPrecision;
+
+		String message = "Given scalars do not match: " + d1 + " != " + d2 + " with bitDistance: " + distance;
+		if(errorMessage != null)
+			message = errorMessage + "\n" + message;
+		assertTrue(message, equal);
+	}
+
+	public static void compareScalars(String expected, String actual) {
+			assertEquals(expected, actual);
 	}
 	
-	public static void compareScalars(String expected, String actual) {
+	public static void compareScalars(Boolean expected, Boolean actual) {
 			assertEquals(expected, actual);
 	}
 
 	public static boolean compareMatrices(HashMap<CellIndex, Double> m1, HashMap<CellIndex, Double> m2,
-			double tolerance, String name1, String name2) 
+			double tolerance, String name1, String name2)
 	{
 		return compareMatrices(m1, m2, tolerance, name1, name2, false);
 	}
-	
+
 	public static void compareMatrices(HashMap<CellIndex, Double> m1, MatrixBlock m2, double tolerance) {
 		double[][] ret1 = convertHashMapToDoubleArray(m1);
 		double[][] ret2 = DataConverter.convertToDoubleMatrix(m2);
 		compareMatrices(ret1, ret2, m2.getNumRows(), m2.getNumColumns(), tolerance);
 	}
-	
+
+	public static void compareMatrices(MatrixBlock m1, MatrixBlock m2, double tolerance) {
+		double[][] ret1 = DataConverter.convertToDoubleMatrix(m1);
+		double[][] ret2 = DataConverter.convertToDoubleMatrix(m2);
+		compareMatrices(ret1, ret2, m2.getNumRows(), m2.getNumColumns(), tolerance);
+	}
+
 	/**
 	 * Compares two matrices given as HashMaps. The matrix containing more nnz
 	 * is iterated and each cell value compared against the corresponding cell
@@ -825,7 +1050,7 @@ public class TestUtils
 	 * This method does not assert. Instead statistics are added to
 	 * AssertionBuffer, at the end of the test you should call
 	 * {@link TestUtils#displayAssertionBuffer()}.
-	 * 
+	 *
 	 * @param m1
 	 * @param m2
 	 * @param tolerance
@@ -838,8 +1063,8 @@ public class TestUtils
 		String namefirst = name2;
 		String namesecond = name1;
 		boolean flag = true;
-		
-		/** to ensure that always the matrix with more nnz is iterated */
+
+		// to ensure that always the matrix with more nnz is iterated
 		if (m1.size() > m2.size()) {
 			first = m1;
 			second = m2;
@@ -850,28 +1075,25 @@ public class TestUtils
 
 		int countErrorWithinTolerance = 0;
 		int countIdentical = 0;
-		double minerr = -1;
-		double maxerr = 0;
+		double minerr = Double.MAX_VALUE;
+		double maxerr = -Double.MAX_VALUE;
 
-		for (CellIndex index : first.keySet()) {
-			Double v1 = first.get(index);
-			Double v2 = second.get(index);
-			if (v1 == null)
-				v1 = 0.0;
-			if (v2 == null)
-				v2 = 0.0;
-			if (Math.abs(v1 - v2) < minerr || minerr == -1)
-				minerr = Math.abs(v1 - v2);
-			if (Math.abs(v1 - v2) > maxerr)
-				maxerr = Math.abs(v1 - v2);
+		for (Entry<CellIndex, Double> e : first.entrySet()) {
+			Double v1 = e.getValue() == null ? 0.0 : e.getValue();
+			Double v2 = second.get(e.getKey());
+			v2 = v2 == null ? 0.0 : v2;
+			minerr = Math.min(minerr, Math.abs(v1 - v2));
+			maxerr = Math.max(maxerr, Math.abs(v1 - v2));
 
-			if (!compareCellValue(first.get(index), second.get(index), 0, ignoreNaN)) {
-				if (!compareCellValue(first.get(index), second.get(index), tolerance, ignoreNaN)) {
+			if (!compareCellValue(v1, v2, 0, ignoreNaN)) {
+				if (!compareCellValue(v1, v2, tolerance, ignoreNaN)) {
 					countErrorWithinTolerance++;
-					if(!flag)
-						System.out.println(index+": "+first.get(index)+" <--> "+second.get(index));
-					else 
-						System.out.println(index+": "+second.get(index)+" <--> "+first.get(index));
+					if(LOG.isDebugEnabled()){
+						if(!flag)
+							LOG.debug(e.getKey()+": "+v1+" <--> "+v2);
+						else
+							LOG.debug(e.getKey()+": "+v2+" <--> "+v1);
+					}
 				}
 			} else {
 				countIdentical++;
@@ -895,35 +1117,35 @@ public class TestUtils
 		_AssertOccured = true;
 		return false;
 	}
-	
-	
+
+
 	/**
-	 * 
+	 *
 	 * @param vt
 	 * @param in1
 	 * @param in2
 	 * @param tolerance
-	 * 
+	 *
 	 * @return
 	 */
 	public static int compareTo(ValueType vt, Object in1, Object in2, double tolerance) {
 		if(in1 == null && in2 == null) return 0;
 		else if(in1 == null) return -1;
 		else if(in2 == null) return 1;
- 
+
 		switch( vt ) {
 			case STRING:  return ((String)in1).compareTo((String)in2);
 			case BOOLEAN: return ((Boolean)in1).compareTo((Boolean)in2);
 			case INT64:     return ((Long)in1).compareTo((Long)in2);
-			case FP64:  
-				return (Math.abs((Double)in1-(Double)in2) < tolerance)?0:	
+			case FP64:
+				return (Math.abs((Double)in1-(Double)in2) < tolerance)?0:
 					((Double)in1).compareTo((Double)in2);
 			default: throw new RuntimeException("Unsupported value type: "+vt);
 		}
 	}
-	
+
 	/**
-	 * 
+	 *
 	 * @param vt
 	 * @param in1
 	 * @param inR
@@ -933,32 +1155,32 @@ public class TestUtils
 		if(in1 == null && (inR == null || (inR.toString().compareTo("NA")==0))) return 0;
 		else if(in1 == null && vt == ValueType.STRING) return -1;
 		else if(inR == null) return 1;
- 
+
 		switch( vt ) {
 			case STRING:  return ((String)in1).compareTo((String)inR);
-			case BOOLEAN: 
+			case BOOLEAN:
 				if(in1 == null)
 					return Boolean.FALSE.compareTo(((Boolean)inR).booleanValue());
 				else
 					return ((Boolean)in1).compareTo((Boolean)inR);
-			case INT64:     
+			case INT64:
 				if(in1 == null)
 					return new Long(0).compareTo(((Long)inR));
 				else
 					return ((Long)in1).compareTo((Long)inR);
-			case FP64:  
+			case FP64:
 				if(in1 == null)
 					return (new Double(0)).compareTo((Double)inR);
 				else
-					return (Math.abs((Double)in1-(Double)inR) < tolerance)?0:	
+					return (Math.abs((Double)in1-(Double)inR) < tolerance)?0:
 						((Double)in1).compareTo((Double)inR);
 			default: throw new RuntimeException("Unsupported value type: "+vt);
 		}
 	}
-	
+
 	/**
 	 * Converts a 2D array into a sparse hashmap matrix.
-	 * 
+	 *
 	 * @param matrix
 	 * @return
 	 */
@@ -973,57 +1195,34 @@ public class TestUtils
 
 		return hmMatrix;
 	}
-	
+
 	/**
 	 * Method to convert a hashmap of matrix entries into a double array
 	 * @param matrix
 	 * @return
 	 */
-	public static double[][] convertHashMapToDoubleArray(HashMap <CellIndex, Double> matrix)
-	{
+	public static double[][] convertHashMapToDoubleArray(HashMap <CellIndex, Double> matrix) {
 		int max_rows = -1, max_cols= -1;
-		for(CellIndex ci :matrix.keySet())
-		{
-			if(ci.row > max_rows)
-			{
-				max_rows = ci.row;
-			}
-			if(ci.column > max_cols)
-			{
-				max_cols = ci.column;
-			}
+		for(CellIndex ix : matrix.keySet()) {
+			max_rows = Math.max(max_rows, ix.row);
+			max_cols = Math.max(max_cols, ix.column);
 		}
-		
-		double [][] ret_arr = new double[max_rows][max_cols];
-		
-		for(CellIndex ci:matrix.keySet())
-		{
-			int i = ci.row-1;
-			int j = ci.column-1;
-			ret_arr[i][j] = matrix.get(ci);
-		}
-		
-		return ret_arr;
-		
+		return convertHashMapToDoubleArray(matrix, max_rows, max_cols);
 	}
-	
-	public static double[][] convertHashMapToDoubleArray(HashMap <CellIndex, Double> matrix, int rows, int cols)
-	{
+
+	public static double[][] convertHashMapToDoubleArray(HashMap<CellIndex, Double> matrix, int rows, int cols) {
 		double [][] ret_arr = new double[rows][cols];
-		
-		for(CellIndex ci:matrix.keySet()) {
-			int i = ci.row-1;
-			int j = ci.column-1;
-			ret_arr[i][j] = matrix.get(ci);
+		for(Entry<CellIndex, Double> e : matrix.entrySet()) {
+			int i = e.getKey().row-1;
+			int j = e.getKey().column-1;
+			ret_arr[i][j] = e.getValue();
 		}
-		
 		return ret_arr;
-		
 	}
 
 	/**
 	 * Converts a 2D double array into a 1D double array.
-	 * 
+	 *
 	 * @param array
 	 * @return
 	 */
@@ -1041,7 +1240,7 @@ public class TestUtils
 
 	/**
 	 * Converts a 1D double array into a 2D double array.
-	 * 
+	 *
 	 * @param array
 	 * @return
 	 */
@@ -1074,7 +1273,7 @@ public class TestUtils
 	 * Compares a dml matrix file in HDFS with a file in normal file system
 	 * generated by R
 	 * </p>
-	 * 
+	 *
 	 * @param rFile
 	 *            file with values calculated by R
 	 * @param hdfsDir
@@ -1094,16 +1293,20 @@ public class TestUtils
 				compareIn.readLine();
 				readValuesFromFileStreamAndPut(compareIn, expectedValues);
 			}
-			
+
 			FileStatus[] outFiles = fs.listStatus(outDirectory);
 
 			for (FileStatus file : outFiles) {
 				FSDataInputStream fsout = fs.open(file.getPath());
 				readValuesFromFileStream(fsout, actualValues);
 			}
+			Set<CellIndex> allKeys = new HashSet<>();
+			allKeys.addAll(expectedValues.keySet());
+			if(expectedValues.size() != actualValues.size())
+				allKeys.addAll(actualValues.keySet());
 
 			int countErrors = 0;
-			for (CellIndex index : expectedValues.keySet()) {
+			for (CellIndex index : allKeys) {
 				Double expectedValue = expectedValues.get(index);
 				Double actualValue = actualValues.get(index);
 				if (expectedValue == null)
@@ -1124,7 +1327,7 @@ public class TestUtils
 	 * <p>
 	 * Checks a matrix against a number of specifications.
 	 * </p>
-	 * 
+	 *
 	 * @param data
 	 *            matrix data
 	 * @param mc
@@ -1154,7 +1357,7 @@ public class TestUtils
 	 * Checks a matrix read from a file in text format against a number of
 	 * specifications.
 	 * </p>
-	 * 
+	 *
 	 * @param outDir
 	 *            directory containing the matrix
 	 * @param rows
@@ -1171,7 +1374,7 @@ public class TestUtils
 			Path outDirectory = new Path(outDir);
 			FileSystem fs = IOUtilFunctions.getFileSystem(outDirectory, conf);
 			assertTrue(outDir + " does not exist", fs.exists(outDirectory));
-			
+
 			if( fs.getFileStatus(outDirectory).isDirectory() )
 			{
 				FileStatus[] outFiles = fs.listStatus(outDirectory);
@@ -1216,7 +1419,7 @@ public class TestUtils
 	 * <p>
 	 * Checks for matrix in directory existence.
 	 * </p>
-	 * 
+	 *
 	 * @param outDir
 	 *            directory
 	 */
@@ -1243,7 +1446,7 @@ public class TestUtils
 	 * <p>
 	 * Removes all the directories specified in the array in HDFS
 	 * </p>
-	 * 
+	 *
 	 * @param directories
 	 *            directories array
 	 */
@@ -1264,7 +1467,7 @@ public class TestUtils
 	 * <p>
 	 * Removes all the directories specified in the array in OS filesystem
 	 * </p>
-	 * 
+	 *
 	 * @param directories
 	 *            directories array
 	 */
@@ -1293,7 +1496,7 @@ public class TestUtils
 	 * <p>
 	 * Removes all the files specified in the array in HDFS
 	 * </p>
-	 * 
+	 *
 	 * @param files
 	 *            files array
 	 */
@@ -1314,7 +1517,7 @@ public class TestUtils
 	 * <p>
 	 * Removes all the files specified in the array in OS filesystem
 	 * </p>
-	 * 
+	 *
 	 * @param files
 	 *            files array
 	 */
@@ -1332,7 +1535,7 @@ public class TestUtils
 	 * <p>
 	 * Clears a complete directory.
 	 * </p>
-	 * 
+	 *
 	 * @param directory
 	 *            directory
 	 */
@@ -1356,7 +1559,7 @@ public class TestUtils
 	 * <p>
 	 * Set seed to -1 to use the current time as seed.
 	 * </p>
-	 * 
+	 *
 	 * @param rows
 	 *            number of rows
 	 * @param cols
@@ -1386,6 +1589,72 @@ public class TestUtils
 	}
 
 	/**
+	 * Generates a test matrix with the specified parameters as a two
+	 * dimensional array.
+	 * Set seed to -1 to use the current time as seed.
+	 *
+	 * @param rows number of rows
+	 * @param cols number of columns
+	 * @param min minimum value
+	 * @param max maximum value
+	 * @param sparsity sparsity
+	 * @param seed seed
+	 * @param delta The minimum delta between values.
+	 * @return random matrix
+	 */
+	public static double[][] generateTestMatrix(int rows, int cols, double min, double max, double sparsity, long seed, double delta) {
+		double[][] matrix = new double[rows][cols];
+		Random random = (seed == -1) ? TestUtils.random : new Random(seed);
+		for (int i = 0; i < rows; i++) {
+			for (int j = 0; j < cols; j++) {
+				if (random.nextDouble() > sparsity)
+					continue;
+				double v = (random.nextDouble()) * (max - min);
+				matrix[i][j] = (v + min ) - v % delta;
+				matrix[i][j] = Math.round(matrix[i][j]  * 100.0) / 100.0;
+			}
+		}
+
+		return matrix;
+	}
+
+	/**
+	 *
+	 * Generates a test matrix, but only containing real numbers, in the range specified.
+	 *
+	 * @param rows number of rows
+	 * @param cols number of columns
+	 * @param min minimum value whole number
+	 * @param max maximum value whole number
+	 * @param sparsity sparsity
+	 * @param seed seed
+	 * @return random matrix containing whole numbers in the range specified.
+	 */
+	public static int[][] generateTestMatrixIntV(int rows, int cols, int min, int max, double sparsity, long seed) {
+		int[][] matrix = new int[rows][cols];
+		Random random = (seed == -1) ? TestUtils.random : new Random(seed);
+		if (max - min != 0){
+			for (int i = 0; i < rows; i++) {
+				for (int j = 0; j < cols; j++) {
+					if (random.nextDouble() > sparsity)
+						continue;
+					matrix[i][j] = (random.nextInt((max - min)) + min);
+				}
+			}
+		} else{
+			for (int i = 0; i < rows; i++) {
+				for (int j = 0; j < cols; j++) {
+					if (random.nextDouble() > sparsity)
+						continue;
+					matrix[i][j] = max;
+				}
+			}
+		}
+
+		return matrix;
+	}
+
+	/**
 	 * <p>
 	 * Generates a test matrix with the specified parameters as a two
 	 * dimensional array. The matrix will not contain any zero values.
@@ -1393,7 +1662,7 @@ public class TestUtils
 	 * <p>
 	 * Set seed to -1 to use the current time as seed.
 	 * </p>
-	 * 
+	 *
 	 * @param rows
 	 *            number of rows
 	 * @param cols
@@ -1430,7 +1699,7 @@ public class TestUtils
 	 * <p>
 	 * Set seed to -1 to use the current time as seed.
 	 * </p>
-	 * 
+	 *
 	 * @param file
 	 *            output file
 	 * @param rows
@@ -1454,7 +1723,7 @@ public class TestUtils
 			DataOutputStream out = fs.create(inFile);
 			try( PrintWriter pw = new PrintWriter(out) ) {
 				Random random = (seed == -1) ? TestUtils.random : new Random(seed);
-				
+
 				for (int i = 1; i <= rows; i++) {
 					for (int j = 1; j <= cols; j++) {
 						if (random.nextDouble() > sparsity)
@@ -1657,7 +1926,7 @@ public class TestUtils
 
 	/**
 	 * Counts the number of NNZ values in a matrix
-	 * 
+	 *
 	 * @param matrix
 	 * @return
 	 */
@@ -1672,9 +1941,9 @@ public class TestUtils
 		return n;
 	}
 
-	public static void writeCSVTestMatrix(String file, double[][] matrix) 
+	public static void writeCSVTestMatrix(String file, double[][] matrix)
 	{
-		try 
+		try
 		{
 			//create outputstream to HDFS / FS and writer
 			Path path = new Path(file);
@@ -1689,7 +1958,7 @@ public class TestUtils
 						sb.append(matrix[i][0]);
 					for (int j = 1; j < matrix[i].length; j++) {
 						sb.append(",");
-						if ( matrix[i][j] == 0 ) 
+						if ( matrix[i][j] == 0 )
 							continue;
 						sb.append(matrix[i][j]);
 					}
@@ -1697,8 +1966,8 @@ public class TestUtils
 					pw.append(sb.toString());
 				}
 			}
-		} 
-		catch (IOException e) 
+		}
+		catch (IOException e)
 		{
 			fail("unable to write (csv) test matrix (" + file + "): " + e.getMessage());
 		}
@@ -1708,18 +1977,18 @@ public class TestUtils
 	 * <p>
 	 * Writes a matrix to a file using the text format.
 	 * </p>
-	 * 
+	 *
 	 * @param file
 	 *            file name
 	 * @param matrix
 	 *            matrix
 	 * @param isR
 	 *            when true, writes a R matrix to disk
-	 * 
+	 *
 	 */
-	public static void writeTestMatrix(String file, double[][] matrix, boolean isR) 
+	public static void writeTestMatrix(String file, double[][] matrix, boolean isR)
 	{
-		try 
+		try
 		{
 			//create outputstream to HDFS / FS and writer
 			DataOutputStream out = null;
@@ -1727,26 +1996,26 @@ public class TestUtils
 				Path path = new Path(file);
 				FileSystem fs = IOUtilFunctions.getFileSystem(path, conf);
 				out = fs.create(path, true);
-			} 
+			}
 			else {
 				out = new DataOutputStream(new FileOutputStream(file));
 			}
-			
+
 			try( BufferedWriter pw = new BufferedWriter(new OutputStreamWriter(out))) {
-				
+
 				//write header
 				if( isR ) {
 					/** add R header */
 					pw.append("%%MatrixMarket matrix coordinate real general\n");
 					pw.append("" + matrix.length + " " + matrix[0].length + " " + matrix.length*matrix[0].length+"\n");
 				}
-				
+
 				//writer actual matrix
 				StringBuilder sb = new StringBuilder();
 				boolean emptyOutput = true;
 				for (int i = 0; i < matrix.length; i++) {
 					for (int j = 0; j < matrix[i].length; j++) {
-						if ( matrix[i][j] == 0 ) 
+						if ( matrix[i][j] == 0 )
 							continue;
 						sb.append(i + 1);
 						sb.append(' ');
@@ -1759,13 +2028,13 @@ public class TestUtils
 						emptyOutput = false;
 					}
 				}
-				
+
 				//writer dummy entry if empty
 				if( emptyOutput )
 					pw.append("1 1 " + matrix[0][0]);
 			}
-		} 
-		catch (IOException e) 
+		}
+		catch (IOException e)
 		{
 			fail("unable to write test matrix (" + file + "): " + e.getMessage());
 		}
@@ -1775,7 +2044,7 @@ public class TestUtils
 	 * <p>
 	 * Writes a matrix to a file using the text format.
 	 * </p>
-	 * 
+	 *
 	 * @param file
 	 *            file name
 	 * @param matrix
@@ -1785,18 +2054,18 @@ public class TestUtils
 		writeTestMatrix(file, matrix, false);
 	}
 
-	
+
 	/**
 	 * <p>
 	 * Writes a frame to a file using the text format.
 	 * </p>
-	 * 
+	 *
 	 * @param file
 	 *            file name
 	 * @param data
 	 *            frame data
 	 * @param isR
-	 * @throws IOException 
+	 * @throws IOException
 	 */
 	public static void writeTestFrame(String file, double[][] data, ValueType[] schema, FileFormat fmt, boolean isR) throws IOException {
 		FrameWriter writer = FrameWriterFactory.createFrameWriter(fmt);
@@ -1804,17 +2073,17 @@ public class TestUtils
 		initFrameData(frame, data, schema, data.length);
 		writer.writeFrameToHDFS(frame, file, data.length, schema.length);
 	}
-	
+
 	/**
 	 * <p>
 	 * Writes a frame to a file using the text format.
 	 * </p>
-	 * 
+	 *
 	 * @param file
 	 *            file name
 	 * @param data
 	 *            frame data
-	 * @throws IOException 
+	 * @throws IOException
 	 */
 	public static void writeTestFrame(String file, double[][] data, ValueType[] schema, FileFormat fmt) throws IOException {
 		writeTestFrame(file, data, schema, fmt, false);
@@ -1824,7 +2093,7 @@ public class TestUtils
 		Object[] row1 = new Object[lschema.length];
 		for( int i=0; i<rows; i++ ) {
 			for( int j=0; j<lschema.length; j++ ) {
-				data[i][j] = UtilFunctions.objectToDouble(lschema[j], 
+				data[i][j] = UtilFunctions.objectToDouble(lschema[j],
 						row1[j] = UtilFunctions.doubleToObject(lschema[j], data[i][j]));
 				if(row1[j] != null && lschema[j] == ValueType.STRING)
 					row1[j] = "Str" + row1[j];
@@ -1833,7 +2102,7 @@ public class TestUtils
 		}
 	}
 
-	
+
 	/* Write a scalar value to a file */
 	public static void writeTestScalar(String file, double value) {
 		try {
@@ -1856,27 +2125,27 @@ public class TestUtils
 			fail("unable to write test scalar (" + file + "): " + e.getMessage());
 		}
 	}
-	
+
 	/**
 	 * <p>
 	 * Writes a matrix to a file using the binary cells format.
 	 * </p>
-	 * 
+	 *
 	 * @param file
 	 *            file name
 	 * @param matrix
 	 *            matrix
 	 */
-	@SuppressWarnings("deprecation")
 	public static void writeBinaryTestMatrixCells(String file, double[][] matrix) {
 		try {
 			SequenceFile.Writer writer = null;
 			try {
 				Path path = new Path(file);
-				FileSystem fs = IOUtilFunctions.getFileSystem(path, conf);
-				writer = new SequenceFile.Writer(fs, conf, path,
-					MatrixIndexes.class, MatrixCell.class);
-
+				Writer.Option filePath = Writer.file(path);
+				Writer.Option keyClass = Writer.keyClass(MatrixIndexes.class);
+				Writer.Option valueClass = Writer.valueClass(MatrixBlock.class);
+				Writer.Option compression = Writer.compression(SequenceFile.CompressionType.NONE);
+				writer = SequenceFile.createWriter(conf, filePath, keyClass, valueClass, compression);
 				MatrixIndexes index = new MatrixIndexes();
 				MatrixCell value = new MatrixCell();
 				for (int i = 0; i < matrix.length; i++) {
@@ -1902,7 +2171,7 @@ public class TestUtils
 	 * <p>
 	 * Writes a matrix to a file using the binary blocks format.
 	 * </p>
-	 * 
+	 *
 	 * @param file
 	 *            file name
 	 * @param matrix
@@ -1914,17 +2183,17 @@ public class TestUtils
 	 * @param sparseFormat
 	 *            sparse format
 	 */
-	@SuppressWarnings("deprecation")
 	public static void writeBinaryTestMatrixBlocks(String file, double[][] matrix, int rowsInBlock, int colsInBlock,
 			boolean sparseFormat) {
 		SequenceFile.Writer writer = null;
-			
+
 		try {
 			Path path = new Path(file);
-			FileSystem fs = IOUtilFunctions.getFileSystem(path, conf);
-			writer = new SequenceFile.Writer(fs, conf, path,
-					MatrixIndexes.class, MatrixBlock.class);
-
+			Writer.Option filePath = Writer.file(path);
+			Writer.Option keyClass = Writer.keyClass(MatrixIndexes.class);
+			Writer.Option valueClass = Writer.valueClass(MatrixBlock.class);
+			Writer.Option compression = Writer.compression(SequenceFile.CompressionType.NONE);
+			writer = SequenceFile.createWriter(conf, filePath, keyClass, valueClass, compression);
 			MatrixIndexes index = new MatrixIndexes();
 			MatrixBlock value = new MatrixBlock();
 			for (int i = 0; i < matrix.length; i += rowsInBlock) {
@@ -1932,7 +2201,7 @@ public class TestUtils
 				for (int j = 0; j < matrix[i].length; j += colsInBlock) {
 					int cols = Math.min(colsInBlock, (matrix[i].length - j));
 					index.setIndexes(((i / rowsInBlock) + 1), ((j / colsInBlock) + 1));
-					value = new MatrixBlock(rows, cols, sparseFormat);
+					value.reset(rows, cols, sparseFormat);
 					for (int k = 0; k < rows; k++) {
 						for (int l = 0; l < cols; l++) {
 							value.setValue(k, l, matrix[i + k][j + l]);
@@ -1941,7 +2210,7 @@ public class TestUtils
 					writer.append(index, value);
 				}
 			}
-		} 
+		}
 		catch (IOException e) {
 			e.printStackTrace();
 			fail("unable to write test matrix: " + e.getMessage());
@@ -1955,7 +2224,7 @@ public class TestUtils
 	 * <p>
 	 * Prints out a DML script.
 	 * </p>
-	 * 
+	 *
 	 * @param dmlScriptFile
 	 *            filename of DML script
 	 */
@@ -1979,7 +2248,7 @@ public class TestUtils
 	 * <p>
 	 * Prints out a PYDML script.
 	 * </p>
-	 * 
+	 *
 	 * @param pydmlScriptFile
 	 *            filename of PYDML script
 	 */
@@ -1991,19 +2260,19 @@ public class TestUtils
 			while ((content = in.readLine()) != null) {
 				System.out.println(content);
 			}
-		} 
+		}
 		catch (IOException e) {
 			e.printStackTrace();
 			fail("unable to print pydml script: " + e.getMessage());
 		}
 		System.out.println("**************************************************\n\n");
 	}
-	
+
 	/**
 	 * <p>
 	 * Prints out an R script.
 	 * </p>
-	 * 
+	 *
 	 * @param dmlScriptFile
 	 *            filename of RL script
 	 */
@@ -2027,7 +2296,7 @@ public class TestUtils
 	 * <p>
 	 * Renames a temporary DML script file back to it's original name.
 	 * </p>
-	 * 
+	 *
 	 * @param dmlScriptFile
 	 *            temporary script file
 	 */
@@ -2065,7 +2334,7 @@ public class TestUtils
 	 * Checks if any temporary files or directories exist in the current working
 	 * directory.
 	 * </p>
-	 * 
+	 *
 	 * @return true if temporary files or directories are available
 	 */
 	@SuppressWarnings("resource")
@@ -2093,7 +2362,7 @@ public class TestUtils
 	 * Returns the path to a file in a directory if it is the only file in the
 	 * directory.
 	 * </p>
-	 * 
+	 *
 	 * @param directory
 	 *            directory containing the file
 	 * @return path of the file
@@ -2119,7 +2388,7 @@ public class TestUtils
 	 * <p>
 	 * Creates an empty file.
 	 * </p>
-	 * 
+	 *
 	 * @param filename
 	 *            filename
 	 */
@@ -2133,7 +2402,7 @@ public class TestUtils
 	 * <p>
 	 * Performs transpose onto a matrix and returns the result.
 	 * </p>
-	 * 
+	 *
 	 * @param a
 	 *            matrix
 	 * @return transposed matrix
@@ -2156,7 +2425,7 @@ public class TestUtils
 	 * <p>
 	 * Performs matrix multiplication onto two matrices and returns the result.
 	 * </p>
-	 * 
+	 *
 	 * @param a
 	 *            left matrix
 	 * @param b
@@ -2164,14 +2433,15 @@ public class TestUtils
 	 * @return computed result
 	 */
 	public static double[][] performMatrixMultiplication(double[][] a, double[][] b) {
-		int rows = a.length;
-		int cols = b[0].length;
-		double[][] result = new double[rows][cols];
+		int m = a.length;
+		int n = a[0].length;
+		int l = b[0].length;
+		double[][] result = new double[m][l];
 
-		for (int i = 0; i < rows; i++) {
-			for (int j = 0; j < cols; j++) {
+		for (int i = 0; i < m; i++) {
+			for (int j = 0; j < l; j++) {
 				double value = 0;
-				for (int k = 0; k < a[i].length; k++) {
+				for (int k = 0; k < n; k++) {
 					value += (a[i][k] * b[k][j]);
 				}
 				result[i][j] = value;
@@ -2185,7 +2455,7 @@ public class TestUtils
 	 * <p>
 	 * Returns a random integer value.
 	 * </p>
-	 * 
+	 *
 	 * @return random integer value
 	 */
 	public static int getRandomInt() {
@@ -2198,7 +2468,7 @@ public class TestUtils
 	 * <p>
 	 * Returns a positive random integer value.
 	 * </p>
-	 * 
+	 *
 	 * @return positive random integer value
 	 */
 	public static int getPositiveRandomInt() {
@@ -2212,7 +2482,7 @@ public class TestUtils
 	 * <p>
 	 * Returns a negative random integer value.
 	 * </p>
-	 * 
+	 *
 	 * @return negative random integer value
 	 */
 	public static int getNegativeRandomInt() {
@@ -2226,7 +2496,7 @@ public class TestUtils
 	 * <p>
 	 * Returns a random double value.
 	 * </p>
-	 * 
+	 *
 	 * @return random double value
 	 */
 	public static double getRandomDouble() {
@@ -2239,7 +2509,7 @@ public class TestUtils
 	 * <p>
 	 * Returns a positive random double value.
 	 * </p>
-	 * 
+	 *
 	 * @return positive random double value
 	 */
 	public static double getPositiveRandomDouble() {
@@ -2253,7 +2523,7 @@ public class TestUtils
 	 * <p>
 	 * Returns a negative random double value.
 	 * </p>
-	 * 
+	 *
 	 * @return negative random double value
 	 */
 	public static double getNegativeRandomDouble() {
@@ -2268,7 +2538,7 @@ public class TestUtils
 	 * Returns the string representation of a double value which can be used in
 	 * a DML script.
 	 * </p>
-	 * 
+	 *
 	 * @param value
 	 *            double value
 	 * @return string representation
@@ -2280,7 +2550,7 @@ public class TestUtils
 		nf.setMaximumFractionDigits(20);
 		return nf.format(value);
 	}
-	
+
 	public static void replaceRandom( double[][] A, int rows, int cols, double replacement, int len ) {
 		Random rand = new Random();
 		for( int i=0; i<len; i++ )
@@ -2299,7 +2569,7 @@ public class TestUtils
 	 * <p>
 	 * Generates a matrix containing easy to debug values in its cells.
 	 * </p>
-	 * 
+	 *
 	 * @param rows
 	 * @param cols
 	 * @param bContainsZeros
@@ -2319,45 +2589,45 @@ public class TestUtils
 		}
 		return matrix;
 	}
-	
+
 	public static double[][] round(double[][] data) {
 		for(int i=0; i<data.length; i++)
 			for(int j=0; j<data[i].length; j++)
 				data[i][j]=Math.round(data[i][j]);
 		return data;
 	}
-	
+
 	public static double[][] round(double[][] data, int col) {
 		for(int i=0; i<data.length; i++)
 			data[i][col]=Math.round(data[i][col]);
 		return data;
 	}
-	
+
 	public static MatrixBlock round(MatrixBlock data) {
 		return DataConverter.convertToMatrixBlock(
 			round(DataConverter.convertToDoubleMatrix(data)));
 	}
-	
+
 	public static double[][] floor(double[][] data) {
 		for(int i=0; i<data.length; i++)
 			for(int j=0; j<data[i].length; j++)
 				data[i][j]=Math.floor(data[i][j]);
 		return data;
 	}
-	
+
 	public static double[][] ceil(double[][] data) {
 		for(int i=0; i<data.length; i++)
 			for(int j=0; j<data[i].length; j++)
 				data[i][j]=Math.ceil(data[i][j]);
 		return data;
 	}
-	
+
 	public static double[][] floor(double[][] data, int col) {
 		for(int i=0; i<data.length; i++)
 			data[i][col]=Math.floor(data[i][col]);
 		return data;
 	}
-	
+
 	public static double sum(double[][] data, int rows, int cols) {
 		double sum = 0;
 		for (int i = 0; i< rows; i++){
@@ -2367,14 +2637,14 @@ public class TestUtils
 		}
 		return sum;
 	}
-	
+
 	public static long computeNNZ(double[][] data) {
 		long nnz = 0;
 		for(int i=0; i<data.length; i++)
 			nnz += UtilFunctions.computeNnz(data[i], 0, data[i].length);
 		return nnz;
 	}
-	
+
 	public static double[][] seq(int from, int to, int incr) {
 		int len = (int)UtilFunctions.getSeqLength(from, to, incr);
 		double[][] ret = new double[len][1];
@@ -2382,12 +2652,17 @@ public class TestUtils
 			ret[i][0] = val;
 		return ret;
 	}
-	
+
 	public static void shutdownThreads(Thread... ts) {
 		for( Thread t : ts )
 			shutdownThread(t);
 	}
-	
+
+	public static void shutdownThreads(Process... ts) {
+		for( Process t : ts )
+			shutdownThread(t);
+	}
+
 	public static void shutdownThread(Thread t) {
 		// kill the worker
 		if( t != null ) {
@@ -2400,7 +2675,24 @@ public class TestUtils
 			}
 		}
 	}
-	
+
+	public static void shutdownThread(Process t) {
+		// kill the worker
+		if( t != null ) {
+			Process d = t.destroyForcibly();
+			try {
+				d.waitFor();
+			}
+			catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+		}
+	}
+
+	public static String federatedAddress(int port, String input) {
+		return federatedAddress("localhost", port, input);
+	}
+
 	public static String federatedAddress(String host, int port, String input) {
 		return host + ':' + port + '/' + input;
 	}
@@ -2742,7 +3034,7 @@ public class TestUtils
 			return output;
 		}
 	}
-	
+
 	public static double[][] generateUnbalancedGLMInputDataX(int rows, int cols, double logFeatureVarianceDisbalance) {
 		double[][] X = generateTestMatrix(rows, cols, -1.0, 1.0, 1.0, 34567);
 		double shift_X = 1.0;
@@ -2754,14 +3046,14 @@ public class TestUtils
 		}
 		return X;
 	}
-	
+
 	public static double[] generateUnbalancedGLMInputDataB(double[][] X, int cols, double intercept, double avgLinearForm, double stdevLinearForm, Random r) {
 		double[] beta_unscaled = new double[cols];
 		for (int j = 0; j < cols; j++)
 			beta_unscaled[j] = r.nextGaussian();
 		return scaleWeights(beta_unscaled, X, intercept, avgLinearForm, stdevLinearForm);
 	}
-	
+
 	public static double[][] generateUnbalancedGLMInputDataY(double[][] X, double[] beta, int rows, int cols, GLMDist glmdist, double intercept, double dispersion, Random r) {
 		double[][] y = null;
 		if (glmdist.is_binom_n_needed())
@@ -2784,7 +3076,22 @@ public class TestUtils
 				y[i][0] = glmdist.nextGLM(r, eta);
 			}
 		}
-		
+
 		return y;
+	}
+
+	public static boolean containsNan(double[][] data, int col) {
+		for (double[] datum : data)
+			if (Double.isNaN(datum[col]))
+				return true;
+		return false;
+	}
+	
+	public static int isGPUAvailable() {
+		// returns cudaSuccess if at least one gpu is available
+		//final int[] deviceCount = new int[1];
+		//return JCuda.cudaGetDeviceCount(deviceCount);
+		// FIXME: Fails to skip if gpu available but no libraries
+		return 1; //return false for now
 	}
 }

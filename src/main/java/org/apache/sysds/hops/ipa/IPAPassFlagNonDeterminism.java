@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
 
+import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.hops.FunctionOp;
 import org.apache.sysds.hops.Hop;
 import org.apache.sysds.hops.HopsException;
@@ -48,10 +49,10 @@ public class IPAPassFlagNonDeterminism extends IPAPass {
 	}
 
 	@Override
-	public void rewriteProgram (DMLProgram prog, FunctionCallGraph fgraph, FunctionCallSizeInfo fcallSizes) 
+	public boolean rewriteProgram (DMLProgram prog, FunctionCallGraph fgraph, FunctionCallSizeInfo fcallSizes) 
 	{
-		if (!LineageCacheConfig.isMultiLevelReuse())
-			return;
+		if (!LineageCacheConfig.isMultiLevelReuse() && !DMLScript.LINEAGE_ESTIMATE)
+			return false;
 		
 		try {
 			// Find the individual functions and statementblocks with non-determinism.
@@ -84,6 +85,7 @@ public class IPAPassFlagNonDeterminism extends IPAPass {
 		catch( LanguageException ex ) {
 			throw new HopsException(ex);
 		}
+		return false;
 	}
 
 	private boolean rIsNonDeterministicFnc (String fname, ArrayList<StatementBlock> sbs) 

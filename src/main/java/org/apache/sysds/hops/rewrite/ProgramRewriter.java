@@ -50,18 +50,17 @@ import org.apache.sysds.runtime.lineage.LineageCacheConfig;
  */
 public class ProgramRewriter
 {
-	//internal local debug level
-	private static final boolean LDEBUG = false;
+	private static final boolean LDEBUG = false; //internal local debug level
 	private static final boolean CHECK = false;
 	
 	private ArrayList<HopRewriteRule> _dagRuleSet = null;
 	private ArrayList<StatementBlockRewriteRule> _sbRuleSet = null;
-	
+
 	static {
 		// for internal debugging only
 		if( LDEBUG ) {
 			Logger.getLogger("org.apache.sysds.hops.rewrite")
-				  .setLevel(Level.DEBUG);
+				.setLevel(Level.DEBUG);
 		}
 	}
 	
@@ -102,11 +101,14 @@ public class ProgramRewriter
 			_dagRuleSet.add( new RewriteInjectSparkPReadCheckpointing()          ); //dependency: reblock
 			
 			//add statement block rewrite rules
- 			if( OptimizerUtils.ALLOW_BRANCH_REMOVAL ) {
+			if( OptimizerUtils.ALLOW_BRANCH_REMOVAL )
 				_sbRuleSet.add(  new RewriteRemoveUnnecessaryBranches()          ); //dependency: constant folding
-				_sbRuleSet.add(  new RewriteMergeBlockSequence()                 ); //dependency: remove branches
-			}
-			_sbRuleSet.add(      new RewriteCompressedReblock()                  ); // Compression Rewrite
+			if( OptimizerUtils.ALLOW_FOR_LOOP_REMOVAL )
+				_sbRuleSet.add(  new RewriteRemoveForLoopEmptySequence()         ); //dependency: constant folding
+			if( OptimizerUtils.ALLOW_BRANCH_REMOVAL || OptimizerUtils.ALLOW_FOR_LOOP_REMOVAL )
+				_sbRuleSet.add(  new RewriteMergeBlockSequence()                 ); //dependency: remove branches, remove for-loops
+			if(OptimizerUtils.ALLOW_COMPRESSION_REWRITE)
+				_sbRuleSet.add(      new RewriteCompressedReblock()              ); // Compression Rewrite
  			if( OptimizerUtils.ALLOW_SPLIT_HOP_DAGS )
  				_sbRuleSet.add(  new RewriteSplitDagUnknownCSVRead()             ); //dependency: reblock, merge blocks
  			if( ConfigurationManager.getCompilerConfigFlag(ConfigType.ALLOW_INDIVIDUAL_SB_SPECIFIC_OPS) )
@@ -136,6 +138,9 @@ public class ProgramRewriter
 				_dagRuleSet.add( new RewriteAlgebraicSimplificationDynamic()      ); //dependencies: cse
 				_dagRuleSet.add( new RewriteAlgebraicSimplificationStatic()       ); //dependencies: cse
 			}
+			if ( OptimizerUtils.FEDERATED_COMPILATION ) {
+				_dagRuleSet.add( new RewriteFederatedExecution() );
+			}
 		}
 		
 		// cleanup after all rewrites applied 
@@ -144,6 +149,8 @@ public class ProgramRewriter
 			_dagRuleSet.add( new RewriteRemoveUnnecessaryCasts()             );
 		if( OptimizerUtils.ALLOW_COMMON_SUBEXPRESSION_ELIMINATION )
 			_dagRuleSet.add( new RewriteCommonSubexpressionElimination(true) );
+		if( OptimizerUtils.ALLOW_CONSTANT_FOLDING )
+			_dagRuleSet.add( new RewriteConstantFolding()                    ); //dependency: cse
 		_sbRuleSet.add(  new RewriteRemoveEmptyBasicBlocks()                 );
 	}
 	
@@ -201,8 +208,10 @@ public class ProgramRewriter
 	}
 	
 	public ProgramRewriteStatus rewriteProgramHopDAGs(DMLProgram dmlp, boolean splitDags) {
-		ProgramRewriteStatus state = new ProgramRewriteStatus();
-		
+		return rewriteProgramHopDAGs(dmlp, splitDags, new ProgramRewriteStatus());
+	}
+	
+	public ProgramRewriteStatus rewriteProgramHopDAGs(DMLProgram dmlp, boolean splitDags, ProgramRewriteStatus state) {
 		// for each namespace, handle function statement blocks
 		for (String namespaceKey : dmlp.getNamespaces().keySet())
 			for (String fname : dmlp.getFunctionStatementBlocks(namespaceKey).keySet()) {

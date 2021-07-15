@@ -22,7 +22,7 @@ package org.apache.sysds.hops;
 import org.apache.sysds.lops.Data;
 import org.apache.sysds.lops.Lop;
 import org.apache.sysds.lops.LopsException;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.runtime.meta.DataCharacteristics;
@@ -246,6 +246,7 @@ public class LiteralOp extends Hop
 		switch( getValueType() ) {
 			case BOOLEAN:
 				return String.valueOf(value_boolean);
+			case UINT8:
 			case INT32:
 			case INT64:
 				return String.valueOf(value_long);
@@ -282,5 +283,10 @@ public class LiteralOp extends Hop
 	public boolean compare( Hop that )
 	{
 		return false;
+	}
+
+	@Override
+	public String toString(){
+		return getOpString();
 	}
 }

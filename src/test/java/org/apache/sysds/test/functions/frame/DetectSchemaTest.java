@@ -27,7 +27,7 @@ import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types;
 import org.apache.sysds.common.Types.FileFormat;
 import org.apache.sysds.hops.OptimizerUtils;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.io.FrameWriter;
 import org.apache.sysds.runtime.io.FrameWriterFactory;
 import org.apache.sysds.runtime.matrix.data.FrameBlock;
@@ -117,7 +117,7 @@ public class DetectSchemaTest extends AutomatedTestBase {
 			}
 			else {
 				double[][] A = getRandomMatrix(rows, 3, -Float.MAX_VALUE, Float.MAX_VALUE, 0.7, 2373);
-				initFrameDataString(frame1, A, schema);
+				initFrameDataString(frame1, A, schema, rows, 3);
 				writer.writeFrameToHDFS(frame1.slice(0, rows-1, 0, schema.length-1, new FrameBlock()), input("A"), rows, schema.length);
 				schema[schema.length-2] = Types.ValueType.FP64;
 			}
@@ -143,8 +143,8 @@ public class DetectSchemaTest extends AutomatedTestBase {
 		}
 	}
 
-	private static void initFrameDataString(FrameBlock frame1, double[][] data, Types.ValueType[] lschema) {
-		for (int j = 0; j < 3; j++) {
+	public static void initFrameDataString(FrameBlock frame1, double[][] data, Types.ValueType[] lschema, int rows, int cols) {
+		for (int j = 0; j < cols; j++) {
 			Types.ValueType vt = lschema[j];
 			switch (vt) {
 				case STRING:

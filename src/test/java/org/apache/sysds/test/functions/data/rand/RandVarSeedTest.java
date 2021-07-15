@@ -25,7 +25,7 @@ import java.util.Random;
 import org.junit.Test;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
@@ -101,7 +101,7 @@ public class RandVarSeedTest extends AutomatedTestBase
 			double[][] expectedMatrix = DataConverter.convertToDoubleMatrix(expectedMB);
 			
 			//compare matrices 
-			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromHDFS("R");
+			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("R");
 			double[][] resultMatrix = TestUtils.convertHashMapToDoubleArray(dmlfile);
 			TestUtils.compareMatrices(expectedMatrix, resultMatrix, rows, cols, 0);
 		} 

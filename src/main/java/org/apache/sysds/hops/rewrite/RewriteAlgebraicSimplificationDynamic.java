@@ -55,6 +55,8 @@ import org.apache.sysds.lops.MapMultChain.ChainType;
 import org.apache.sysds.parser.DataExpression;
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.ValueType;
+import org.apache.sysds.conf.ConfigurationManager;
+import org.apache.sysds.conf.DMLConfig;
 
 /**
  * Rule: Algebraic Simplifications. Simplifies binary expressions
@@ -137,7 +139,7 @@ public class RewriteAlgebraicSimplificationDynamic extends HopRewriteRule
 		//recursively process children
 		for( int i=0; i<hop.getInput().size(); i++)
 		{
-			Hop hi = hop.getInput().get(i);
+			Hop hi = hop.getInput(i);
 			
 			//process childs recursively first (to allow roll-up)
 			if( descendFirst )
@@ -154,7 +156,8 @@ public class RewriteAlgebraicSimplificationDynamic extends HopRewriteRule
 			hi = removeUnnecessaryReorgOperation(hop, hi, i); //e.g., matrix(X) -> X, if dims(in)==dims(out); r(X)->X, if 1x1 dims
 			hi = removeUnnecessaryOuterProduct(hop, hi, i);   //e.g., X*(Y%*%matrix(1,...) -> X*Y, if Y col vector
 			hi = removeUnnecessaryIfElseOperation(hop, hi, i);//e.g., ifelse(E, A, B) -> A, if E==TRUE or nnz(E)==length(E)
-			hi = removeUnnecessaryAppendTSMM(hop, hi, i);     //e.g., X = t(rbind(A,B,C)) %*% rbind(A,B,C) -> t(A)%*%A + t(B)%*%B + t(C)%*%C
+			if(ConfigurationManager.getDMLConfig().getBooleanValue(DMLConfig.COMPILERASSISTED_RW))
+				hi = removeUnnecessaryAppendTSMM(hop, hi, i);     //e.g., X = t(rbind(A,B,C)) %*% rbind(A,B,C) -> t(A)%*%A + t(B)%*%B + t(C)%*%C
 			if(OptimizerUtils.ALLOW_OPERATOR_FUSION)
 				hi = fuseDatagenAndReorgOperation(hop, hi, i);    //e.g., t(rand(rows=10,cols=1)) -> rand(rows=1,cols=10), if one dim=1
 			hi = simplifyColwiseAggregate(hop, hi, i);        //e.g., colsums(X) -> sum(X) or X, if col/row vector
@@ -498,7 +501,7 @@ public class RewriteAlgebraicSimplificationDynamic extends HopRewriteRule
 			List<Hop> inputs = hi.getInput().get(1).getInput();
 			if( HopRewriteUtils.checkAvgRowsGteCols(inputs) ) {
 				Hop[] tsmms = inputs.stream()
-					.map(h -> HopRewriteUtils.createTSMM(h, true)).toArray(Hop[]::new);
+					.map(h -> HopRewriteUtils.createTsmm(h, true)).toArray(Hop[]::new);
 				hnew = HopRewriteUtils.createNary(OpOpN.PLUS, tsmms);
 				//cleanup parent references from rbind
 				//HopRewriteUtils.removeAllChildReferences(hi.getInput().get(1));
@@ -526,6 +529,19 @@ public class RewriteAlgebraicSimplificationDynamic extends HopRewriteRule
 				//HopRewriteUtils.removeAllChildReferences(hi.getInput().get(0).getInput().get(0));
 				//HopRewriteUtils.removeAllChildReferences(hi.getInput().get(1));
 				branch = 2;
+			}
+		}
+		//pattern 3: X = t(cbind(A, B)) %*% cbind(A, B), w/ one cbind consumer (twice in tsmm)
+		else if( HopRewriteUtils.isTsmm(hi) && hi.getInput().get(1).getParent().size()==2
+			&& HopRewriteUtils.isTransposeOperation(hi.getInput().get(0))
+			&& HopRewriteUtils.isBinary(hi.getInput().get(1), OpOp2.CBIND) )
+		{
+			Hop input1 = hi.getInput().get(1).getInput().get(0);
+			Hop input2 = hi.getInput().get(1).getInput().get(1);
+			if( input1.getDim1() > input1.getDim2() && input2.getDim2() == 1 ) {
+				hnew = HopRewriteUtils.createPartialTsmmCbind(
+					input1, input2, HopRewriteUtils.createTsmm(input1, true));
+				branch = 3;
 			}
 		}
 		
@@ -2479,7 +2495,7 @@ public class RewriteAlgebraicSimplificationDynamic extends HopRewriteRule
 				hi = minus;
 				
 				LOG.debug("Applied reorderMinusMatrixMult (line "+hi.getBeginLine()+").");
-			}	
+			}
 		}
 		
 		return hi;
@@ -2627,7 +2643,7 @@ public class RewriteAlgebraicSimplificationDynamic extends HopRewriteRule
 	{
 		//pattern: table(seq(1,nrow(v)), v, nrow(v), m) -> rexpand(v, max=m, dir=row, ignore=false, cast=true)
 		//note: this rewrite supports both left/right sequence 
-		if(    hi instanceof TernaryOp && hi.getInput().size()==5 //table without weights 
+		if(    hi instanceof TernaryOp && hi.getInput().size()==6 //table without weights 
 			&& HopRewriteUtils.isLiteralOfValue(hi.getInput().get(2), 1) ) //i.e., weight of 1
 		{
 			Hop first = hi.getInput().get(0);

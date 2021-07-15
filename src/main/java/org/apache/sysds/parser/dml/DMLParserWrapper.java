@@ -24,6 +24,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Map;
+import java.util.Map.Entry;
 
 import org.antlr.v4.runtime.ANTLRInputStream;
 import org.antlr.v4.runtime.BailErrorStrategy;
@@ -37,6 +38,7 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.parser.DMLProgram;
+import org.apache.sysds.parser.FunctionDictionary;
 import org.apache.sysds.parser.FunctionStatementBlock;
 import org.apache.sysds.parser.ImportStatement;
 import org.apache.sysds.parser.LanguageException;
@@ -186,19 +188,20 @@ public class DMLParserWrapper extends ParserWrapper
 		if (atLeastOneWarning) {
 			LOG.warn(CustomErrorListener.generateParseIssuesMessage(dmlScript, parseIssues));
 		}
-		dmlPgm = createDMLProgram(ast, sourceNamespace);
+		dmlPgm = createDMLProgram(ast, validator, sourceNamespace);
 		
 		return dmlPgm;
 	}
 	
-	private static DMLProgram createDMLProgram(ProgramrootContext ast, String sourceNamespace)
+	private static DMLProgram createDMLProgram(ProgramrootContext ast,
+		DmlSyntacticValidator validator, String sourceNamespace)
 	{
 		DMLProgram dmlPgm = new DMLProgram();
-		String namespace = (sourceNamespace != null && sourceNamespace.length() > 0)
-			? sourceNamespace : DMLProgram.DEFAULT_NAMESPACE;
-		dmlPgm.getNamespaces().put(namespace, dmlPgm);
+		String namespace = (sourceNamespace != null && sourceNamespace.length() > 0) ?
+			sourceNamespace : DMLProgram.DEFAULT_NAMESPACE;
+		dmlPgm.getNamespaces().put(namespace, new FunctionDictionary<>());
 
-		// add all functions from the main script file
+		// add all functions from the parsed script file
 		for(FunctionStatementContext fn : ast.functionBlocks) {
 			FunctionStatementBlock functionStmtBlk = new FunctionStatementBlock();
 			functionStmtBlk.addStatement(fn.info.stmt);
@@ -210,7 +213,16 @@ public class DMLParserWrapper extends ParserWrapper
 				return null;
 			}
 		}
-
+		
+		// add all builtin functions collected while parsing script file
+		FunctionDictionary<FunctionStatementBlock> fbuiltins = validator.getParsedBuiltinFunctions();
+		if( !fbuiltins.getFunctions().isEmpty() )
+			dmlPgm.createNamespace(DMLProgram.BUILTIN_NAMESPACE);
+		for( Entry<String, FunctionStatementBlock> e : fbuiltins.getFunctions().entrySet() )
+			dmlPgm.addFunctionStatementBlock(DMLProgram.BUILTIN_NAMESPACE, e.getKey(), e.getValue());
+		for( Entry<String, FunctionDictionary<FunctionStatementBlock>> e : validator.getParsedBuiltinFunctionsNs().entrySet() )
+			addFunctions(dmlPgm, e.getKey(), e.getValue());
+		
 		// add statements from main script file, as well as 
 		// functions from imports and dml-bodied builtin functions
 		for(StatementContext stmtCtx : ast.blocks) {
@@ -225,15 +237,8 @@ public class DMLParserWrapper extends ParserWrapper
 				// Handle import statements separately
 				if(stmtCtx.info.namespaces != null) {
 					// Add the DMLProgram entries into current program
-					for(Map.Entry<String, DMLProgram> e : stmtCtx.info.namespaces.entrySet()) {
+					for(Entry<String, FunctionDictionary<FunctionStatementBlock>> e : stmtCtx.info.namespaces.entrySet()) {
 						addFunctions(dmlPgm, e.getKey(), e.getValue());
-						// Add dependent programs (handle imported script that also imports scripts)
-						for(Map.Entry<String, DMLProgram> dependency : e.getValue().getNamespaces().entrySet()) {
-							String depNamespace = dependency.getKey();
-							DMLProgram depProgram = dependency.getValue();
-							if (dmlPgm.getNamespaces().get(depNamespace) == null)
-								dmlPgm.getNamespaces().put(depNamespace, depProgram);
-						}
 					}
 				}
 				else {
@@ -255,10 +260,15 @@ public class DMLParserWrapper extends ParserWrapper
 		return dmlPgm;
 	}
 	
-	private static void addFunctions(DMLProgram dmlPgm, String namespace, DMLProgram prog) {
-		// TODO handle namespace key already exists for different program value instead of overwriting
-		if (prog != null && prog.getNamespaces().size() > 0) {
-			dmlPgm.getNamespaces().put(namespace, prog);
+	private static void addFunctions(DMLProgram dmlPgm, String namespace, FunctionDictionary<FunctionStatementBlock> dict) {
+		if( dict != null ) {
+			// merge function dictionary into existing dictionary
+			// (e.g., for builtin namespaces)
+			if( dmlPgm.getNamespaces().containsKey(namespace) )
+				dmlPgm.getNamespaces().get(namespace).merge(dict);
+			// add entire dictionary for non-existing namespace
+			else
+				dmlPgm.getNamespaces().put(namespace, dict);
 		}
 	}
 }

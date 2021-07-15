@@ -38,6 +38,7 @@ import org.apache.sysds.runtime.functionobjects.IntegerDivide;
 import org.apache.sysds.runtime.functionobjects.LessThan;
 import org.apache.sysds.runtime.functionobjects.LessThanEquals;
 import org.apache.sysds.runtime.functionobjects.Minus;
+import org.apache.sysds.runtime.functionobjects.Minus1Multiply;
 import org.apache.sysds.runtime.functionobjects.MinusMultiply;
 import org.apache.sysds.runtime.functionobjects.MinusNz;
 import org.apache.sysds.runtime.functionobjects.Modulus;
@@ -56,6 +57,8 @@ public class BinaryOperator  extends Operator implements Serializable
 	private static final long serialVersionUID = -2547950181558989209L;
 
 	public final ValueFunction fn;
+	public final boolean commutative;
+	private int _k = 1; // num threads
 	
 	public BinaryOperator(ValueFunction p) {
 		//binaryop is sparse-safe iff (0 op 0) == 0
@@ -65,6 +68,16 @@ public class BinaryOperator  extends Operator implements Serializable
 			|| p instanceof BitwAnd || p instanceof BitwOr || p instanceof BitwXor
 			|| p instanceof BitwShiftL || p instanceof BitwShiftR);
 		fn = p;
+		commutative = p instanceof Plus || p instanceof Multiply 
+			|| p instanceof And || p instanceof Or || p instanceof Xor || p instanceof Minus1Multiply;
+	}
+	
+	public void setNumThreads(int k) {
+		_k = k;
+	}
+	
+	public int getNumThreads() {
+		return _k;
 	}
 	
 	/**
@@ -109,6 +122,10 @@ public class BinaryOperator  extends Operator implements Serializable
 		//PRINT, CONCAT, QUANTILE, INTERQUANTILE, IQM, 
 		//CENTRALMOMENT, COVARIANCE, APPEND, SOLVE, MEDIAN,
 		return null;
+	}
+	
+	public boolean isCommutative() {
+		return commutative;
 	}
 	
 	@Override

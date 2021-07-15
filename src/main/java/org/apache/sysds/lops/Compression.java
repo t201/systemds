@@ -19,45 +19,51 @@
 
 package org.apache.sysds.lops;
 
-import org.apache.sysds.lops.LopProperties.ExecType;
 import org.apache.sysds.common.Types.DataType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.common.Types.ValueType;
 
-public class Compression extends Lop 
-{
+public class Compression extends Lop {
 	public static final String OPCODE = "compress";
-	
+
+	private final int _singletonLookupKey;
+
 	public enum CompressConfig {
-		TRUE,
-		FALSE,
-		AUTO;
+		TRUE, FALSE, COST, AUTO, WORKLOAD;
+
 		public boolean isEnabled() {
-			return this == TRUE || this == AUTO;
+			return this != FALSE;
 		}
 	}
-	
-	public Compression(Lop input, DataType dt, ValueType vt, ExecType et) {
+
+	public Compression(Lop input, DataType dt, ValueType vt, ExecType et, int singletonLookupKey) {
 		super(Lop.Type.Checkpoint, dt, vt);
 		addInput(input);
 		input.addOutput(this);
 		lps.setProperties(inputs, et);
+		_singletonLookupKey = singletonLookupKey;
 	}
 
 	@Override
 	public String toString() {
 		return "Compress";
 	}
-	
+
 	@Override
 	public String getInstructions(String input1, String output) {
 		StringBuilder sb = new StringBuilder();
-		sb.append( getExecType() );
-		sb.append( Lop.OPERAND_DELIMITOR );
-		sb.append( OPCODE );
-		sb.append( OPERAND_DELIMITOR );
-		sb.append( getInputs().get(0).prepInputOperand(input1));
-		sb.append( OPERAND_DELIMITOR );
-		sb.append( prepOutputOperand(output));
+		sb.append(getExecType());
+		sb.append(Lop.OPERAND_DELIMITOR);
+		sb.append(OPCODE);
+		sb.append(OPERAND_DELIMITOR);
+		sb.append(getInputs().get(0).prepInputOperand(input1));
+		sb.append(OPERAND_DELIMITOR);
+		sb.append(prepOutputOperand(output));
+		if(_singletonLookupKey != 0){
+			sb.append(OPERAND_DELIMITOR);
+			sb.append(_singletonLookupKey);
+		}
+		
 		return sb.toString();
 	}
 }

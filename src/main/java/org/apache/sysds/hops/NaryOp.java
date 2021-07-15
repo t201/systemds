@@ -24,7 +24,7 @@ import org.apache.sysds.common.Types.OpOpN;
 import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.hops.rewrite.HopRewriteUtils;
 import org.apache.sysds.lops.Lop;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.lops.Nary;
 import org.apache.sysds.runtime.meta.DataCharacteristics;
 import org.apache.sysds.runtime.meta.MatrixCharacteristics;
@@ -126,7 +126,7 @@ public class NaryOp extends Hop {
 		super.computeMemEstimate(memo);
 
 		//specific case for function call
-		if( _op == OpOpN.EVAL ) {
+		if( _op == OpOpN.EVAL || _op == OpOpN.LIST ) {
 			_memEstimate = OptimizerUtils.INT_SIZE;
 			_outputMemEstimate = OptimizerUtils.INT_SIZE;
 			_processingMemEstimate = 0;
@@ -186,7 +186,7 @@ public class NaryOp extends Hop {
 	@Override
 	@SuppressWarnings("incomplete-switch")
 	protected DataCharacteristics inferOutputCharacteristics(MemoTable memo) {
-		if( !getDataType().isScalar() ) {
+		if( !getDataType().isScalar() && !getDataType().isFrame()) {
 			DataCharacteristics[] dc = memo.getAllInputStats(getInput());
 			
 			switch( _op ) {
@@ -214,14 +214,18 @@ public class NaryOp extends Hop {
 	public void refreshSizeInformation() {
 		switch( _op ) {
 			case CBIND:
-				setDim1(HopRewriteUtils.getMaxInputDim(this, true));
-				setDim2(HopRewriteUtils.getSumValidInputDims(this, false));
-				setNnz(HopRewriteUtils.getSumValidInputNnz(this));
+				if( !getInput().get(0).getDataType().isList() ) {
+					setDim1(HopRewriteUtils.getMaxInputDim(this, true));
+					setDim2(HopRewriteUtils.getSumValidInputDims(this, false));
+					setNnz(HopRewriteUtils.getSumValidInputNnz(this));
+				}
 				break;
 			case RBIND:
-				setDim1(HopRewriteUtils.getSumValidInputDims(this, true));
-				setDim2(HopRewriteUtils.getMaxInputDim(this, false));
-				setNnz(HopRewriteUtils.getSumValidInputNnz(this));
+				if( !getInput().get(0).getDataType().isList() ) {
+					setDim1(HopRewriteUtils.getSumValidInputDims(this, true));
+					setDim2(HopRewriteUtils.getMaxInputDim(this, false));
+					setNnz(HopRewriteUtils.getSumValidInputNnz(this));
+				}
 				break;
 			case MIN:
 			case MAX:

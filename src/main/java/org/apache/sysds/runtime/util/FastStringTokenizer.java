@@ -86,6 +86,6 @@ public class FastStringTokenizer implements Serializable
 	}
 
 	public double nextDouble() {
-		return UtilFunctions.parseToDouble(nextToken());
+		return Double.parseDouble(nextToken());
 	}
 }

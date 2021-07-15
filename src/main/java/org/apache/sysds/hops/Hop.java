@@ -19,11 +19,17 @@
 
 package org.apache.sysds.hops;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.ExecMode;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.common.Types.FileFormat;
 import org.apache.sysds.common.Types.OpOp1;
 import org.apache.sysds.common.Types.OpOp2;
@@ -36,16 +42,19 @@ import org.apache.sysds.lops.CSVReBlock;
 import org.apache.sysds.lops.Checkpoint;
 import org.apache.sysds.lops.Compression;
 import org.apache.sysds.lops.Data;
+import org.apache.sysds.lops.DeCompression;
 import org.apache.sysds.lops.Lop;
-import org.apache.sysds.lops.LopProperties.ExecType;
 import org.apache.sysds.lops.LopsException;
 import org.apache.sysds.lops.ReBlock;
 import org.apache.sysds.lops.UnaryCP;
 import org.apache.sysds.parser.ParseInfo;
+import org.apache.sysds.runtime.compress.SingletonLookupHashMap;
+import org.apache.sysds.runtime.compress.workload.AWTreeNode;
 import org.apache.sysds.runtime.controlprogram.LocalVariableMap;
 import org.apache.sysds.runtime.controlprogram.caching.MatrixObject.UpdateType;
 import org.apache.sysds.runtime.controlprogram.context.SparkExecutionContext;
 import org.apache.sysds.runtime.controlprogram.parfor.util.IDSequence;
+import org.apache.sysds.runtime.instructions.fed.FEDInstruction.FederatedOutput;
 import org.apache.sysds.runtime.instructions.gpu.context.GPUContextPool;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
 import org.apache.sysds.runtime.meta.DataCharacteristics;
@@ -53,14 +62,8 @@ import org.apache.sysds.runtime.meta.MatrixCharacteristics;
 import org.apache.sysds.runtime.privacy.PrivacyConstraint;
 import org.apache.sysds.runtime.util.UtilFunctions;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.HashSet;
-
-public abstract class Hop implements ParseInfo
-{
-	protected static final Log LOG =  LogFactory.getLog(Hop.class.getName());
+public abstract class Hop implements ParseInfo {
+	private static final Log LOG =  LogFactory.getLog(Hop.class.getName());
 	
 	public static final long CPThreshold = 2000;
 
@@ -73,7 +76,7 @@ public abstract class Hop implements ParseInfo
 	protected ValueType _valueType;
 	protected boolean _visited = false;
 	protected DataCharacteristics _dc = new MatrixCharacteristics();
-	protected PrivacyConstraint _privacyConstraint = new PrivacyConstraint();
+	protected PrivacyConstraint _privacyConstraint = null;
 	protected UpdateType _updateType = UpdateType.COPY;
 
 	protected ArrayList<Hop> _parent = new ArrayList<>();
@@ -81,6 +84,13 @@ public abstract class Hop implements ParseInfo
 
 	protected ExecType _etype = null; //currently used exec type
 	protected ExecType _etypeForced = null; //exec type forced via platform or external optimizer
+
+	/**
+	 * Field defining if the output of the operation should be federated.
+	 * If it is fout, the output should be kept at federated sites.
+	 * If it is lout, the output should be retrieved by the coordinator.
+	 */
+	protected FederatedOutput _federatedOutput = FederatedOutput.NONE;
 	
 	// Estimated size for the output produced from this Hop
 	protected double _outputMemEstimate = OptimizerUtils.INVALID_SIZE;
@@ -99,9 +109,19 @@ public abstract class Hop implements ParseInfo
 	// (usually this happens on persistent reads dataops)
 	protected boolean _requiresReblock = false;
 
-	// indicates if the output of this hop needs to be compressed
-	// (this happens on persistent reads after reblock but before checkpoint)
+	/**
+	 *  indicates if the output of this hop needs to be compressed
+	 * (this happens on persistent reads after reblock but before checkpoint)
+	*/
 	protected boolean _requiresCompression = false;
+
+	/**
+	 * A WTree for this hop instruction in case the compression 
+	 */
+	protected AWTreeNode _compressedWorkloadTree = null;
+
+	/** Boolean specifying if decompression is required.*/
+	protected boolean _requiresDeCompression = false;
 	
 	// indicates if the output of this hop needs to be checkpointed (cached)
 	// (the default storage level for caching is not yet exposed here)
@@ -153,6 +173,14 @@ public abstract class Hop implements ParseInfo
 	{
 		return _etype;
 	}
+
+	public void setExecType(ExecType execType){
+		_etype = execType;
+	}
+
+	public void setFederatedOutput(FederatedOutput federatedOutput){
+		_federatedOutput = federatedOutput;
+	}
 	
 	public void resetExecType()
 	{
@@ -201,7 +229,7 @@ public abstract class Hop implements ParseInfo
 			}
 			else {
 				// enabled with -exec singlenode option
-				_etypeForced = ExecType.CP;  
+				_etypeForced = ExecType.CP;
 			}
 		}
 		else if ( DMLScript.getGlobalExecMode() == ExecMode.SPARK )
@@ -257,8 +285,17 @@ public abstract class Hop implements ParseInfo
 		return _requiresCheckpoint;
 	}
 
-	public void setRequiresCompression(boolean flag) {
-		_requiresCompression = flag;
+	public void setRequiresCompression(){
+		_requiresCompression = true;
+	}
+
+	public void setRequiresCompression(AWTreeNode node) {
+		_requiresCompression = true;
+		_compressedWorkloadTree = node;
+	}
+
+	public void setRequiresDeCompression(){
+		_requiresDeCompression = true;
 	}
 	
 	public boolean requiresCompression() {
@@ -274,6 +311,10 @@ public abstract class Hop implements ParseInfo
 	}
 	
 	public void constructAndSetLopsDataFlowProperties() {
+		//propagate federated output configuration to lops
+		if( isFederated() )
+			getLops().setFederatedOutput(_federatedOutput);
+		
 		//Step 1: construct reblock lop if required (output of hop)
 		constructAndSetReblockLopIfRequired();
 		
@@ -304,7 +345,7 @@ public abstract class Hop implements ParseInfo
 			{
 				if( this instanceof DataOp  // CSV
 					&& ((DataOp)this).getOp() == OpOpData.PERSISTENTREAD
-					&& ((DataOp)this).getInputFormatType() == FileFormat.CSV  )
+					&& ((DataOp)this).getFileFormat() == FileFormat.CSV  )
 				{
 					reblock = new CSVReBlock( input, getBlocksize(), 
 						getDataType(), getValueType(), et);
@@ -370,41 +411,44 @@ public abstract class Hop implements ParseInfo
 		}	
 	}
 
-	private void constructAndSetCompressionLopIfRequired() 
-	{
-		//determine execution type
-		ExecType et = ExecType.CP;
-		if( OptimizerUtils.isSparkExecutionMode() 
-			&& getDataType()!=DataType.SCALAR )
-		{
-			//conditional checkpoint based on memory estimate in order to avoid unnecessary 
-			//persist and unpersist calls (4x the memory budget is conservative)
-			if(    OptimizerUtils.isHybridExecutionMode() 
-				&& 2*_outputMemEstimate < OptimizerUtils.getLocalMemBudget()
-				|| _etypeForced == ExecType.CP )
-			{
-				et = ExecType.CP;
+	private void constructAndSetCompressionLopIfRequired() {
+		if(_requiresCompression ^ _requiresDeCompression){ // xor
+			ExecType et = getExecutionModeForCompression();
+			Lop compressionInstruction = null;
+			try{
+				if( _requiresCompression ){
+					if(_compressedWorkloadTree != null){
+						int singletonID = SingletonLookupHashMap.getMap().put(_compressedWorkloadTree);
+						compressionInstruction = new Compression(getLops(), getDataType(), getValueType(), et, singletonID);
+					}
+					else {
+						compressionInstruction = new Compression(getLops(), getDataType(), getValueType(), et, 0);
+					}
+				}
+				else if( _requiresDeCompression )
+					compressionInstruction = new DeCompression(getLops(), getDataType(), getValueType(), et);
 			}
-			else //default case
-			{
-				et = ExecType.SPARK;
-			}
-		}
-
-		//add reblock lop to output if required
-		if( _requiresCompression )
-		{
-			try
-			{
-				Lop compress = new Compression(getLops(), getDataType(), getValueType(), et);
-				setOutputDimensions( compress );
-				setLineNumbers( compress );
-				setLops( compress );
-			}
-			catch( LopsException ex ) {
+			catch (LopsException ex) {
 				throw new HopsException(ex);
 			}
+			setOutputDimensions( compressionInstruction );
+			setLineNumbers( compressionInstruction );
+			setLops( compressionInstruction );
 		}
+	}
+
+	private ExecType getExecutionModeForCompression(){
+		ExecType et = ExecType.CP;
+		// conditional checkpoint based on memory estimate in order to avoid unnecessary 
+		// persist and unpersist calls (4x the memory budget is conservative)
+		if( OptimizerUtils.isSparkExecutionMode() && getDataType()!=DataType.SCALAR )
+			if( OptimizerUtils.isHybridExecutionMode() 
+				&& 2 * _outputMemEstimate < OptimizerUtils.getLocalMemBudget()
+				|| _etypeForced == ExecType.CP )
+				et = ExecType.CP;
+			else 
+				et = ExecType.SPARK;
+		return et;
 	}
 
 	public static Lop createOffsetLop( Hop hop, boolean repCols ) {
@@ -725,11 +769,32 @@ public abstract class Hop implements ParseInfo
 
 		if (LOG.isDebugEnabled()){
 			String s = String.format("  %c %-5s %-8s (%s,%s)  %s", c, getHopID(), getOpString(), OptimizerUtils.toMB(_outputMemEstimate), OptimizerUtils.toMB(_memEstimate), et);
-			//System.out.println(s);
 			LOG.debug(s);
 		}
 		
 		return et;
+	}
+
+	/**
+	 * Update the execution type if input is federated and federated compilation is activated.
+	 * Federated compilation is activated in OptimizerUtils.
+	 * This method only has an effect if FEDERATED_COMPILATION is activated.
+	 */
+	protected void updateETFed(){
+		if ( _federatedOutput == FederatedOutput.FOUT || _federatedOutput == FederatedOutput.LOUT )
+			_etype = ExecType.FED;
+	}
+	
+	public boolean isFederated(){
+		return getExecType() == ExecType.FED;
+	}
+	
+	public boolean isFederatedOutput(){
+		return _federatedOutput == FederatedOutput.FOUT;
+	}
+
+	public boolean someInputFederated(){
+		return getInput().stream().anyMatch(Hop::hasFederatedOutput);
 	}
 
 	public ArrayList<Hop> getParent() {
@@ -738,6 +803,10 @@ public abstract class Hop implements ParseInfo
 
 	public ArrayList<Hop> getInput() {
 		return _input;
+	}
+	
+	public Hop getInput(int ix) {
+		return _input.get(ix);
 	}
 	
 	public void addInput( Hop h ) {
@@ -774,6 +843,10 @@ public abstract class Hop implements ParseInfo
 		return _privacyConstraint;
 	}
 
+	public boolean hasFederatedOutput(){
+		return _federatedOutput == FederatedOutput.FOUT;
+	}
+
 	public void setUpdateType(UpdateType update){
 		_updateType = update;
 	}
@@ -787,6 +860,11 @@ public abstract class Hop implements ParseInfo
 	protected abstract ExecType optFindExecType();
 	
 	public abstract String getOpString();
+
+	@Override
+	public String toString(){
+		return super.getClass().getSimpleName() + "  " + getOpString();
+	}
 
 	// ========================================================================================
 	// Design doc: Memory estimation of GPU
@@ -850,7 +928,7 @@ public abstract class Hop implements ParseInfo
 	
 	public boolean dimsKnown() {
 		return ( _dataType == DataType.SCALAR 
-			|| ((_dataType==DataType.MATRIX || _dataType==DataType.FRAME) 
+			|| ((_dataType==DataType.MATRIX || _dataType==DataType.FRAME || _dataType==DataType.LIST) 
 				&& _dc.rowsKnown() && _dc.colsKnown()) );
 	}
 	
@@ -1066,6 +1144,8 @@ public abstract class Hop implements ParseInfo
 	 * </ul>
 	 */
 	protected void setRequiresRecompileIfNecessary() {
+		//NOTE: when changing these conditions, remember to update the code for
+		//function recompilation in FunctionProgramBlock accordingly
 		boolean caseRemote = (!dimsKnown(true) && _etype == ExecType.SPARK);
 		boolean caseLocal = (!dimsKnown() && _etypeForced == ExecType.CP);
 		boolean caseCodegen = (!dimsKnown() && ConfigurationManager.isCodegenEnabled());

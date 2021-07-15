@@ -21,12 +21,11 @@ package org.apache.sysds.runtime.instructions;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.log4j.Level;
-import org.apache.log4j.Logger;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.lops.Lop;
 import org.apache.sysds.parser.DataIdentifier;
 import org.apache.sysds.runtime.controlprogram.context.ExecutionContext;
+import org.apache.sysds.runtime.matrix.operators.Operator;
 import org.apache.sysds.runtime.privacy.PrivacyConstraint;
 
 public abstract class Instruction 
@@ -39,15 +38,11 @@ public abstract class Instruction
 		FEDERATED
 	}
 	
-	protected static final Log LOG = LogFactory.getLog(Instruction.class.getName());
+	private static final Log LOG = LogFactory.getLog(Instruction.class.getName());
+	protected final Operator _optr;
 
-	// local flag for debug output
-	private static final boolean LTRACE = false;
-	static {
-		// for internal debugging only
-		if( LTRACE ) {
-			Logger.getLogger("org.apache.sysds.runtime.instructions.Instruction").setLevel(Level.TRACE);
-		}
+	protected Instruction(Operator _optr){
+		this._optr = _optr;
 	}
 
 	public static final String OPERAND_DELIM = Lop.OPERAND_DELIMITOR;
@@ -57,6 +52,7 @@ public abstract class Instruction
 	public static final String INSTRUCTION_DELIM = Lop.INSTRUCTION_DELIMITOR;
 	public static final String SP_INST_PREFIX = "sp_";
 	public static final String GPU_INST_PREFIX = "gpu_";
+	public static final String FEDERATED_INST_PREFIX = "fed_";
 	
 	//basic instruction meta data
 	protected String instString = null;
@@ -138,8 +134,16 @@ public abstract class Instruction
 		privacyConstraint = lop.getPrivacyConstraint();
 	}
 
+	public void setPrivacyConstraint(PrivacyConstraint pc){
+		privacyConstraint = pc;
+	}
+
 	public PrivacyConstraint getPrivacyConstraint(){
 		return privacyConstraint;
+	}
+
+	public Operator getOperator() {
+		return _optr;
 	}
 	
 	/**
@@ -193,6 +197,8 @@ public abstract class Instruction
 				extendedOpcode = SP_INST_PREFIX + getOpcode();
 			else if( getType() == IType.GPU )
 				extendedOpcode = GPU_INST_PREFIX + getOpcode();
+			else if( getType() == IType.FEDERATED)
+				extendedOpcode = FEDERATED_INST_PREFIX + getOpcode();
 			else
 				extendedOpcode = getOpcode();
 		}
@@ -223,11 +229,11 @@ public abstract class Instruction
 	 * @param ec execution context
 	 * @return instruction
 	 */
-	public Instruction preprocessInstruction(ExecutionContext ec){
+	public Instruction preprocessInstruction(ExecutionContext ec) {
 		// Lineage tracing
 		if (DMLScript.LINEAGE)
 			ec.traceLineage(this);
-		//return instruction ifself
+		//return the instruction itself
 		return this;
 	}
 	/**
@@ -244,7 +250,5 @@ public abstract class Instruction
 	 * 
 	 * @param ec execution context
 	 */
-	public void postprocessInstruction(ExecutionContext ec) {
-		//do nothing
-	}
+	public void postprocessInstruction(ExecutionContext ec) {}
 }

@@ -23,8 +23,6 @@ import java.io.IOException;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.log4j.Level;
-import org.apache.log4j.Logger;
 import org.apache.sysds.conf.ConfigurationManager;
 import org.apache.sysds.conf.DMLConfig;
 import org.apache.sysds.hops.OptimizerUtils;
@@ -61,16 +59,7 @@ public class NativeHelper {
 	private static int maxNumThreads = -1;
 	private static boolean setMaxNumThreads = false;
 
-	// local flag for debug output
-	private static final boolean LTRACE = false;
 	private static final Log LOG = LogFactory.getLog(NativeHelper.class.getName());
-
-	static {
-		// for internal debugging only
-		if( LTRACE ) {
-			Logger.getLogger(NativeHelper.class.getName()).setLevel(Level.TRACE);
-		}
-	}
 
 	/**
 	 * Called by Statistics to print the loaded BLAS.
@@ -157,7 +146,20 @@ public class NativeHelper {
 		LOG.info("Unsupported architecture for native BLAS:" + SystemUtils.OS_ARCH);
 		return false;
 	}
-	
+
+	/**
+	 * Note: we only support Windows and Linux at the moment.
+	 *
+	 * @return true if operating system is supported
+	 */
+	private static boolean isSupportedOS() {
+		if(SystemUtils.IS_OS_LINUX || SystemUtils.IS_OS_WINDOWS) {
+			return true;
+		}
+		LOG.info("Unsupported architecture for native BLAS:" + SystemUtils.OS_ARCH);
+		return false;
+	}
+
 	/**
 	 * Check if native BLAS libraries have been successfully loaded
 	 * @return true if CURRENT_NATIVE_BLAS_STATE is SUCCESSFULLY_LOADED_NATIVE_BLAS_AND_IN_USE or
@@ -184,11 +186,12 @@ public class NativeHelper {
 	// Performing loading in a method instead of a static block will throw a detailed stack trace in case of fatal errors
 	private static void performLoading(String customLibPath, String userSpecifiedBLAS) {
 		if((customLibPath != null) && customLibPath.equalsIgnoreCase("none"))
-				customLibPath = null;
+			customLibPath = null;
 
 		// attemptedLoading variable ensures that we don't try to load SystemDS and other dependencies
 		// again and again especially in the parfor (hence the double-checking with synchronized).
-		if(shouldReload(customLibPath) && isSupportedBLAS(userSpecifiedBLAS) && isSupportedArchitecture()) {
+		if(shouldReload(customLibPath) && isSupportedBLAS(userSpecifiedBLAS) && isSupportedArchitecture()
+			&& isSupportedOS()) {
 			long start = System.nanoTime();
 			synchronized(NativeHelper.class) {
 				if(shouldReload(customLibPath)) {
@@ -199,19 +202,12 @@ public class NativeHelper {
 						blas = new String[] { "mkl", "openblas" };
 					}
 
-					if(SystemUtils.IS_OS_WINDOWS) {
-						if (checkAndLoadBLAS(customLibPath, blas) &&
-								(loadLibraryHelper("systemds_" + blasType + "-Windows-AMD64") ||
-								loadBLAS(customLibPath, "systemds_" + blasType + "-Windows-AMD64", null))
-						)
+					if(checkAndLoadBLAS(customLibPath, blas)) {
+						String platform_suffix = (SystemUtils.IS_OS_WINDOWS ? "-Windows-AMD64.dll" : "-Linux-x86_64.so");
+						String library_name = "libsystemds_" + blasType + platform_suffix;
+						if(loadLibraryHelperFromResource(library_name) ||
+						   loadBLAS(customLibPath, library_name,"Loading native helper with customLibPath."))
 						{
-							LOG.info("Using native blas: " + blasType + getNativeBLASPath());
-							CURRENT_NATIVE_BLAS_STATE = NativeBlasState.SUCCESSFULLY_LOADED_NATIVE_BLAS_AND_IN_USE;
-						}
-					}
-					else {
-						if (checkAndLoadBLAS(customLibPath, blas) &&
-								loadLibraryHelper("libsystemds_" + blasType + "-Linux-x86_64.so")) {
 							LOG.info("Using native blas: " + blasType + getNativeBLASPath());
 							CURRENT_NATIVE_BLAS_STATE = NativeBlasState.SUCCESSFULLY_LOADED_NATIVE_BLAS_AND_IN_USE;
 						}
@@ -223,8 +219,8 @@ public class NativeHelper {
 				LOG.warn("Time to load native blas: " + timeToLoadInMilliseconds + " milliseconds.");
 		}
 		else if(LOG.isDebugEnabled() && !isSupportedBLAS(userSpecifiedBLAS)) {
-			LOG.debug("Using internal Java BLAS as native BLAS support the configuration 'sysds.native.blas'=" +
-					userSpecifiedBLAS + ".");
+			LOG.debug("Using internal Java BLAS as native BLAS support instead of the configuration " +
+				"'sysds.native.blas'=" + userSpecifiedBLAS + ".");
 		}
 	}
 	
@@ -234,15 +230,19 @@ public class NativeHelper {
 
 		boolean isLoaded = false;
 		for (String blas : listBLAS) {
-			if (blas.equalsIgnoreCase("mkl")) {
-					isLoaded = loadBLAS(customLibPath, "mkl_rt", null);
-			} else if (blas.equalsIgnoreCase("openblas")) {
-				// no need for gomp on windows
-				if (SystemUtils.IS_OS_WINDOWS || loadBLAS(customLibPath, "gomp",
-						"gomp required for loading OpenBLAS-enabled SystemDS library")) {
-					isLoaded = loadBLAS(customLibPath, "openblas", null);
-				}
+			if (blas.equalsIgnoreCase("mkl"))
+				isLoaded = loadBLAS(customLibPath, "mkl_rt", "");
+			else if (blas.equalsIgnoreCase("openblas")) {
+				// OpenBLAS 0.3.10 binary distribution [1] for windows comes with a libopenblas.dll, so let's try this
+				// first. Make sure the directory of that dll is on your PATH env var or pointed to by customLibPath.
+				// [1] https://github.com/xianyi/OpenBLAS/releases
+				isLoaded = loadBLAS(customLibPath, "libopenblas", "");
+				if(!isLoaded)
+					isLoaded = loadBLAS(customLibPath, "openblas", "");
 			}
+			else
+				LOG.warn("Not trying to load unknown blas type " + blas);
+
 			if (isLoaded) {
 				blasType = blas;
 				break;
@@ -293,19 +293,23 @@ public class NativeHelper {
 	 * @param optionalMsg message for debugging
 	 * @return true if successfully loaded BLAS
 	 */
-	private static boolean loadBLAS(String customLibPath, String blas, String optionalMsg) {
+	public static boolean loadBLAS(String customLibPath, String blas, String optionalMsg) {
 		// First attempt to load from custom library path
 		if((customLibPath != null) && (!customLibPath.equalsIgnoreCase("none"))) {
 			String libPath = customLibPath + File.separator + System.mapLibraryName(blas);
 			try {
+				// This fixes libPath if it already contained a prefix/suffix and mapLibraryName added another one.
+				libPath = libPath.replace("liblibsystemds", "libsystemds")
+								 .replace(".dll.dll", ".dll")
+								 .replace(".so.so", ".so");
 				System.load(libPath);
-				// Print to stdout as this feature is intended for cloud environment
-				System.out.println("Loaded the library:" + libPath);
+				LOG.info("Loaded the library:" + libPath);
 				return true;
 			}
-			catch (UnsatisfiedLinkError e1) { 
-				// Print to stdout as this feature is intended for cloud environment
-				System.out.println("Unable to load " + libPath + ":" + e1.getMessage());
+			catch (UnsatisfiedLinkError e) {
+				LOG.warn("Unable to load " + blas + " from " + libPath +
+						". Trying once more with System.loadLibrary(" + blas +
+						") \n Message from exception was: " + e.getMessage());
 			}
 		}
 
@@ -315,36 +319,37 @@ public class NativeHelper {
 			return true;
 		}
 		catch (UnsatisfiedLinkError e) {
-			System.out.println(System.getProperty("java.library.path"));
-			if(optionalMsg != null)
-				LOG.debug("Unable to load " + blas + "(" + optionalMsg + "):" + e.getMessage());
-			else
-				LOG.debug("Unable to load " + blas + ":" + e.getMessage());
+			LOG.debug("java.library.path: " + System.getProperty("java.library.path"));
+			LOG.debug("Unable to load " + blas + (optionalMsg == null ? "" : (" (" + optionalMsg + ")")) +
+				" \n Message from exception was: " + e.getMessage());
 			return false;
 		}
 	}
 
-
-	private static boolean loadLibraryHelper(String path)  {
-		OutputStream out = null;
-		try(InputStream in = NativeHelper.class.getResourceAsStream("/lib/"+path)) {
+	/**
+	 * Attempts to load the JNI shared library from the sysds jar
+	 *
+	 * @param libFileName library file name)
+	 * @return true if successfully loaded BLAS
+	 */
+	public static boolean loadLibraryHelperFromResource(String libFileName)  {
+		try(InputStream in = NativeHelper.class.getResourceAsStream("/lib/"+ libFileName)) {
 			// This logic is added because Java does not allow to load library from a resource file.
 			if(in != null) {
-				File temp = File.createTempFile(path, "");
+				File temp = File.createTempFile(libFileName, "");
 				temp.deleteOnExit();
-				out = FileUtils.openOutputStream(temp);
+				OutputStream out = FileUtils.openOutputStream(temp);
 				IOUtils.copy(in, out);
+				// not closing the stream here makes dll loading fail on Windows
+				IOUtilFunctions.closeSilently(out);
 				System.load(temp.getAbsolutePath());
 				return true;
 			}
 			else
-				LOG.warn("No lib available in the jar:" + path);
+				LOG.warn("No lib available in the jar:" + libFileName);
 		}
 		catch(IOException e) {
-			LOG.warn("Unable to load library " + path + " from resource:" + e.getMessage());
-		}
-		finally {
-			IOUtilFunctions.closeSilently(out);
+			LOG.warn("Unable to load library " + libFileName + " from resource:" + e.getMessage());
 		}
 		return false;
 	}
@@ -352,13 +357,13 @@ public class NativeHelper {
 	// TODO: Add pmm, wsloss, mmchain, etc.
 	
 	//double-precision matrix multiply dense-dense
-	public static native boolean dmmdd(double [] m1, double [] m2, double [] ret, int m1rlen, int m1clen, int m2clen,
+	public static native long dmmdd(double [] m1, double [] m2, double [] ret, int m1rlen, int m1clen, int m2clen,
 									   int numThreads);
 	//single-precision matrix multiply dense-dense
-	public static native boolean smmdd(FloatBuffer m1, FloatBuffer m2, FloatBuffer ret, int m1rlen, int m1clen, int m2clen,
+	public static native long smmdd(FloatBuffer m1, FloatBuffer m2, FloatBuffer ret, int m1rlen, int m1clen, int m2clen,
 									   int numThreads);
 	//transpose-self matrix multiply
-	public static native boolean tsmm(double[] m1, double[] ret, int m1rlen, int m1clen, boolean leftTrans, int numThreads);
+	public static native long tsmm(double[] m1, double[] ret, int m1rlen, int m1clen, boolean leftTrans, int numThreads);
 
 	// ----------------------------------------------------------------------------------------------------------------
 	// LibMatrixDNN operations:
@@ -369,25 +374,25 @@ public class NativeHelper {
 
 	// Returns -1 if failures or returns number of nonzeros
 	// Called by DnnCPInstruction if both input and filter are dense
-	public static native int conv2dDense(double [] input, double [] filter, double [] ret, int N, int C, int H, int W, 
+	public static native long conv2dDense(double [] input, double [] filter, double [] ret, int N, int C, int H, int W, 
 			int K, int R, int S, int stride_h, int stride_w, int pad_h, int pad_w, int P, int Q, int numThreads);
 
-	public static native int dconv2dBiasAddDense(double [] input, double [] bias, double [] filter, double [] ret, int N,
+	public static native long dconv2dBiasAddDense(double [] input, double [] bias, double [] filter, double [] ret, int N,
 		int C, int H, int W, int K, int R, int S, int stride_h, int stride_w, int pad_h, int pad_w, int P, int Q,
 												 int numThreads);
 
-	public static native int sconv2dBiasAddDense(FloatBuffer input, FloatBuffer bias, FloatBuffer filter, FloatBuffer ret,
+	public static native long sconv2dBiasAddDense(FloatBuffer input, FloatBuffer bias, FloatBuffer filter, FloatBuffer ret,
 		int N, int C, int H, int W, int K, int R, int S, int stride_h, int stride_w, int pad_h, int pad_w, int P, int Q,
 												 int numThreads);
 
 	// Called by DnnCPInstruction if both input and filter are dense
-	public static native int conv2dBackwardFilterDense(double [] input, double [] dout, double [] ret, int N, int C,
+	public static native long conv2dBackwardFilterDense(double [] input, double [] dout, double [] ret, int N, int C,
 													   int H, int W, int K, int R, int S, int stride_h, int stride_w,
 													   int pad_h, int pad_w, int P, int Q, int numThreads);
 
 	// If both filter and dout are dense, then called by DnnCPInstruction
 	// Else, called by LibMatrixDNN's thread if filter is dense. dout[n] is converted to dense if sparse.
-	public static native int conv2dBackwardDataDense(double [] filter, double [] dout, double [] ret, int N, int C,
+	public static native long conv2dBackwardDataDense(double [] filter, double [] dout, double [] ret, int N, int C,
 													 int H, int W, int K, int R, int S, int stride_h, int stride_w,
 													 int pad_h, int pad_w, int P, int Q, int numThreads);
 
